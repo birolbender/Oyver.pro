@@ -14,9 +14,7 @@ async function bootstrap() {
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, { origin: '*' });
 
-  // ============================================================================
-  // 1. OTOMATİK VERİTABANI KURULUMU (POSTGRESQL TABLOLARI)
-  // ============================================================================
+  // 1. VERİTABANI TABLOLARINI OLUŞTUR
   async function initDatabaseTables() {
     try {
       await db.execute(sql`
@@ -84,20 +82,18 @@ async function bootstrap() {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
       `);
-      console.log('✓ PostgreSQL tabloları doğrulandı.');
+      console.log('✓ PostgreSQL tabloları hazır.');
     } catch (err) {
       console.error('Veritabanı başlatma hatası:', err);
     }
   }
 
-  // ============================================================================
-  // 2. OTURUM & KULLANICI YÖNETİMİ
-  // ============================================================================
+  // 2. OTURUM KULLANICISI
   async function getOrCreateActiveUser() {
     let user = await db.query.users.findFirst();
     if (!user) {
       const [newUser] = await db.insert(users).values({
-        username: 'Piyasa_Analisti',
+        username: 'Piyasa_Uzmanı',
         balanceVeraPromo: '500.0000',
         balanceVeraWithdrawable: '0.0000',
         isPhoneVerified: false,
@@ -117,9 +113,7 @@ async function bootstrap() {
     return user;
   }
 
-  // ============================================================================
-  // 3. TOHUM PAZARLARI (İLK KURULUM)
-  // ============================================================================
+  // 3. TOHUM PAZARLARI
   async function seedMarketsIfEmpty() {
     try {
       const countRes = await db.execute(sql`SELECT count(*)::int as count FROM markets`);
@@ -132,10 +126,10 @@ async function bootstrap() {
             slug: 'tcmb-faiz-karari-ekim',
             title: 'TCMB Para Politikası Kurulu, Ekim Toplantısında Politika Faizini İndirecek mi?',
             category: 'Ekonomi',
-            rules: 'TCMB PPK basın duyurusunda politika faizinde indirim açıklandığı an EVET sayılır.',
-            sourceName: 'TCMB Resmî Basın Bülteni',
+            rules: 'TCMB PPK toplantısı resmî duyurusunda politika faizinde indirim açıklandığı an EVET sayılır.',
+            sourceName: 'TCMB Resmî Basın Duyurusu',
             startsAt: now,
-            closesAt: new Date(now.getTime() + 18 * 24 * 60 * 60 * 1000), // 18 Gün
+            closesAt: new Date(now.getTime() + 18 * 24 * 60 * 60 * 1000),
             poolYes: '9880.0000',
             poolNo: '16120.0000',
             volumeVera: '26000.0000',
@@ -146,10 +140,10 @@ async function bootstrap() {
             slug: 'super-lig-derbi-gol-baraji',
             title: 'Hafta Sonu Oynanacak Süper Lig Derbisinde 2.5 Gol Barajı Aşılır mı?',
             category: 'Spor',
-            rules: 'Müsabakanın normal süresi ve hakem uzatmalarında toplam gol sayısı en az 3 ise EVET sayılır.',
+            rules: 'Normal süre ve hakem uzatmalarında toplam gol sayısı en az 3 ise EVET sayılır.',
             sourceName: 'TFF Resmî Hakem Raporu',
             startsAt: now,
-            closesAt: new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000 + 4 * 60 * 60 * 1000), // 3 Gün 4 Saat
+            closesAt: new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000 + 4 * 60 * 60 * 1000),
             poolYes: '13750.0000',
             poolNo: '11250.0000',
             volumeVera: '25000.0000',
@@ -160,10 +154,10 @@ async function bootstrap() {
             slug: '2027-asgari-ucret-karari',
             title: '2027 Yılı Asgari Ücret Tespit Komisyonu Net Ücreti 30.000 TL Üzerine Çıkarır mı?',
             category: 'Ekonomi',
-            rules: 'Resmî Gazete\'de yayımlanan tebliğde net tutar 30.000 TL ve üstü ise EVET sayılır.',
+            rules: 'Resmî Gazete\'de yayımlanan tebliğde 2027 net tutarı 30.000 TL ve üstü ise EVET sayılır.',
             sourceName: 'Resmî Gazete Tebliği',
             startsAt: now,
-            closesAt: new Date(now.getTime() + 92 * 24 * 60 * 60 * 1000), // 92 Gün
+            closesAt: new Date(now.getTime() + 92 * 24 * 60 * 60 * 1000),
             poolYes: '7250.0000',
             poolNo: '17750.0000',
             volumeVera: '25000.0000',
@@ -171,11 +165,25 @@ async function bootstrap() {
             isHero: false
           },
           {
+            slug: 'bist100-yil-sonu-rekoru',
+            title: 'BIST 100 Endeksi 2026 Yılını 12.000 Puan Seviyesinin Üzerinde Kapatır mı?',
+            category: 'Borsa',
+            rules: 'Borsa İstanbul 2026 son işlem günü seans kapanış değeri 12.000,01 ve üzeri ise EVET sayılır.',
+            sourceName: 'Borsa İstanbul Resmî Verileri',
+            startsAt: now,
+            closesAt: new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000),
+            poolYes: '11000.0000',
+            poolNo: '14000.0000',
+            volumeVera: '21000.0000',
+            totalPredictionsCount: 31,
+            isHero: false
+          },
+          {
             slug: 'togg-yeni-segment-teslimat',
-            title: 'TOGG Yeni Modelinin İlk Müşteri Teslimatları Yıl Sonuna Kadar Başlar mı?',
+            title: 'TOGG Yeni Modelinin İlk Müşteri Teslimatları 2026 İçinde Başlar mı?',
             category: 'Teknoloji',
             rules: 'Yıl sonuna kadar nihai kullanıcılara tescilli teslimat yapıldığı duyurulursa EVET sonuçlanır.',
-            sourceName: 'TOGG Resmî Basın Açıklaması',
+            sourceName: 'TOGG Resmî Kurumsal Açıklaması',
             startsAt: now,
             closesAt: new Date(now.getTime() + 75 * 24 * 60 * 60 * 1000),
             poolYes: '12500.0000',
@@ -183,34 +191,16 @@ async function bootstrap() {
             volumeVera: '18500.0000',
             totalPredictionsCount: 19,
             isHero: false
-          },
-          {
-            slug: 'istanbul-baraj-doluluk-ekim',
-            title: 'İSKİ İstanbul Baraj Doluluk Oranı Ekim Ayı Sonunda %45 Altına Düşer mi?',
-            category: 'Yaşam',
-            rules: '31 Ekim günü saat 17:00 İSKİ resmî bülteninde doluluk %44.99 veya altı ise EVET sayılır.',
-            sourceName: 'İSKİ Resmî Bülteni',
-            startsAt: now,
-            closesAt: new Date(now.getTime() + 31 * 24 * 60 * 60 * 1000),
-            poolYes: '9250.0000',
-            poolNo: '15750.0000',
-            volumeVera: '15000.0000',
-            totalPredictionsCount: 15,
-            isHero: false
           }
         ]);
-        console.log('✓ Tohum pazarlar yüklendi.');
+        console.log('✓ Tohum pazarlar eklendi.');
       }
     } catch (e) {
-      console.error('Tohum pazar hatası:', e);
+      console.error('Tohum pazar yükleme hatası:', e);
     }
   }
 
-  // ============================================================================
-  // 4. API UÇLARI (REST ENDPOINTS)
-  // ============================================================================
-
-  // Durum Sorgulama
+  // 4. API DURUM SERVİSİ
   app.get('/api/state', async () => {
     const user = await getOrCreateActiveUser();
     const marketList = await db.query.markets.findMany();
@@ -256,30 +246,6 @@ async function bootstrap() {
 
     const totalBalance = Number(user.balanceVeraPromo) + Number(user.balanceVeraWithdrawable);
 
-    // Günün 3 Hızlı Sorusu
-    const dailyQuestions = [
-      { id: 101, title: 'T.C. Hazine bütçe açığı yıl sonu hedefi altında kalır mı?', category: 'Ekonomi', closeText: '31 Aralık', probYes: 68, probNo: 32, userAnswer: 'YES' },
-      { id: 102, title: 'EuroLeague temsilcimiz bu haftaki maçını kazanır mı?', category: 'Spor', closeText: 'Yarın 21:00', probYes: 54, probNo: 46, userAnswer: null },
-      { id: 103, title: 'Yeni Yapay Zekâ Mevzuat Taslağı bu ay Meclis Komisyonuna gelir mi?', category: 'Teknoloji', closeText: '25 Ekim', probYes: 61, probNo: 39, userAnswer: null }
-    ];
-
-    // Zarla Soruları
-    const zarlaQuestions = [
-      { id: 1, itemA: 'Nutella', itemB: 'Sarelle', votesA: 64, votesB: 36, sponsor: 'Gıda & Tüketim' },
-      { id: 2, itemA: 'iOS (iPhone)', itemB: 'Android', votesA: 58, votesB: 42, sponsor: 'Teknoloji' },
-      { id: 3, itemA: 'Çay', itemB: 'Kahve', votesA: 71, votesB: 29, sponsor: 'Kültür' },
-      { id: 4, itemA: 'Kadıköy', itemB: 'Beşiktaş', votesA: 52, votesB: 48, sponsor: 'Yaşam' },
-      { id: 5, itemA: 'Trendyol', itemB: 'Hepsiburada', votesA: 55, votesB: 45, sponsor: 'E-Ticaret' }
-    ];
-
-    // Top 100 Analistler
-    const topAnalysts = [
-      { rank: 1, username: 'Makro_Ufuk', tier: 'USTA', rating: 894, brier: 0.053, settledCount: 48 },
-      { rank: 2, username: 'Selin_Finans', tier: 'USTA', rating: 865, brier: 0.067, settledCount: 39 },
-      { rank: 3, username: user.username, tier: 'KIDEMLİ', rating: 716, brier: 0.142, settledCount: 18 },
-      { rank: 4, username: 'Bist_Pusulasi', tier: 'ANALİST', rating: 540, brier: 0.230, settledCount: 16 }
-    ];
-
     return {
       success: true,
       systemMode: SYSTEM_CONFIG.MODE,
@@ -294,25 +260,29 @@ async function bootstrap() {
         currentStreak: user.currentStreak,
         positions: enrichedPositions
       },
-      categories: ['Trendler', 'Borsa', 'Siyaset', 'Spor', 'Ekonomi', 'Haber', 'Teknoloji', 'Yaşam'],
-      dailyQuestions,
-      zarlaQuestions,
-      topAnalysts,
-      activeTournament: {
-        id: 1,
-        title: 'Geleceğin Türkiyesi Öngörü Kupası',
-        sponsor: 'Kurumsal İnovasyon Fonu',
-        reward: 'İlk 3 Analiste Teknoloji Çeki & Sertifika',
-        endsAt: '15 Kasım 2026',
-        minPredictionsRequired: 10,
-        participantsCount: 42,
-        isJoined: false
-      },
+      categories: ['Hepsi', 'Ekonomi', 'Borsa', 'Spor', 'Teknoloji', 'Siyaset', 'Yaşam'],
+      dailyQuestions: [
+        { id: 101, title: 'T.C. Hazine bütçe açığı yıl sonu hedefi altında kalır mı?', category: 'Ekonomi', closeText: '31 Aralık', probYes: 68, probNo: 32, userAnswer: 'YES' },
+        { id: 102, title: 'EuroLeague temsilcimiz bu haftaki maçını kazanır mı?', category: 'Spor', closeText: 'Yarın 21:00', probYes: 54, probNo: 46, userAnswer: null },
+        { id: 103, title: 'Yeni Yapay Zekâ Mevzuat Taslağı bu ay Meclis Komisyonuna gelir mi?', category: 'Teknoloji', closeText: '25 Ekim', probYes: 61, probNo: 39, userAnswer: null }
+      ],
+      zarlaQuestions: [
+        { id: 1, itemA: 'Nutella', itemB: 'Sarelle', votesA: 64, votesB: 36, sponsor: 'Gıda & Tüketim' },
+        { id: 2, itemA: 'Apple iOS', itemB: 'Google Android', votesA: 58, votesB: 42, sponsor: 'Teknoloji' },
+        { id: 3, itemA: 'Geleneksel Çay', itemB: 'Filtre Kahve', votesA: 71, votesB: 29, sponsor: 'Yaşam & Kültür' },
+        { id: 4, itemA: 'Trendyol', itemB: 'Hepsiburada', votesA: 55, votesB: 45, sponsor: 'E-Ticaret' }
+      ],
+      topAnalysts: [
+        { rank: 1, username: 'Makro_Ufuk', tier: 'USTA', rating: 894, brier: 0.053, settledCount: 48 },
+        { rank: 2, username: 'Selin_Finans', tier: 'USTA', rating: 865, brier: 0.067, settledCount: 39 },
+        { rank: 3, username: user.username, tier: 'KIDEMLİ', rating: 716, brier: 0.142, settledCount: 18 },
+        { rank: 4, username: 'Bist_Analitik', tier: 'ANALİST', rating: 540, brier: 0.230, settledCount: 16 }
+      ],
       markets: enrichedMarkets
     };
   });
 
-  // Tahmin Alış (Buy)
+  // TAHMİN ALIMI (BUY)
   app.post('/api/trade/buy', async (req: any, reply) => {
     const { marketId, outcome, amountVera } = req.body;
     const user = await getOrCreateActiveUser();
@@ -379,7 +349,7 @@ async function bootstrap() {
     return { success: true, quote, newBalance: newPromo + newWithdrawable };
   });
 
-  // Erken Satış (Cash-Out)
+  // ERKEN SATIŞ (CASHOUT)
   app.post('/api/trade/cashout', async (req: any, reply) => {
     const { positionId } = req.body;
     const user = await getOrCreateActiveUser();
@@ -440,7 +410,7 @@ async function bootstrap() {
     };
   });
 
-  // Telefon Doğrulama (+9.500 VERA)
+  // TELEFON DOĞRULAMA
   app.post('/api/auth/verify-phone', async (req: any, reply) => {
     const { phone, code } = req.body;
     const user = await getOrCreateActiveUser();
@@ -472,9 +442,25 @@ async function bootstrap() {
     return reply.status(400).send({ success: false, message: 'Geçersiz SMS kodu.' });
   });
 
-  // ============================================================================
-  // 5. TEK PARÇA KULLANICI ARAYÜZÜ (HTML / SPA)
-  // ============================================================================
+  // GÜNÜN SORUSU YANITI
+  app.post('/api/daily/answer', async (req: any, reply) => {
+    const user = await getOrCreateActiveUser();
+    const newPromo = Number(user.balanceVeraPromo) + 50;
+
+    await db.update(users).set({ balanceVeraPromo: newPromo.toFixed(4) }).where(eq(users.id, user.id));
+    await db.insert(veraTransactions).values({
+      userId: user.id,
+      accountType: 'PROMO',
+      type: 'DAILY_BONUS',
+      amount: '50.0000',
+      balanceAfter: (newPromo + Number(user.balanceVeraWithdrawable)).toFixed(4),
+      referenceId: 'DAILY_Q_50'
+    });
+
+    return { success: true, message: 'Tahmin kaydedildi! +50 VERA yüklendi.', newBalance: newPromo + Number(user.balanceVeraWithdrawable) };
+  });
+
+  // 5. YENİLENMİŞ ARAYÜZ (HTML / CSS / JS)
   app.get('/', async (_req, reply) => {
     reply.type('text/html; charset=utf-8');
     return `
@@ -482,222 +468,256 @@ async function bootstrap() {
 <html lang="tr">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
   <title>OYVER — Türkiye'nin Kolektif Bilgi ve Tahmin Pazarı</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
-    body { background-color: #030712; color: #f8fafc; font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap');
+    body { background-color: #07090E; color: #F1F5F9; font-family: 'Plus Jakarta Sans', sans-serif; -webkit-tap-highlight-color: transparent; }
     .tabular { font-variant-numeric: tabular-nums; }
+    .glass-card { background: rgba(15, 23, 42, 0.65); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.07); }
+    .glass-card-hover:hover { border-color: rgba(99, 102, 241, 0.4); transform: translateY(-1px); transition: all 0.2s ease; }
     .no-scrollbar::-webkit-scrollbar { display: none; }
   </style>
 </head>
-<body class="min-h-screen pb-24 md:pb-12 text-slate-100">
+<body class="min-h-screen pb-28 text-slate-100 flex flex-col justify-between">
 
-  <!-- TOAST BİLDİRİM -->
-  <div id="toast" class="fixed top-4 right-4 z-50 transform -translate-y-24 opacity-0 transition-all duration-300 bg-slate-900 border border-slate-700 text-white text-xs px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2">
-    <span id="toast-msg">Bildirim</span>
+  <!-- TOAST BİLDİRİM BİLEŞENİ -->
+  <div id="toast" class="fixed top-5 right-5 z-50 transform -translate-y-28 opacity-0 transition-all duration-300 bg-slate-900/95 border border-indigo-500/40 text-white text-xs px-4 py-3 rounded-2xl shadow-2xl flex items-center gap-2 backdrop-blur-md">
+    <span id="toast-icon">✓</span>
+    <span id="toast-msg">İşlem başarılı</span>
   </div>
 
-  <!-- HEADER (YALIN: Piyasalar yukarıdan kaldırıldı, Bakiye profilin altında küçük) -->
-  <header class="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-slate-800 px-4 py-2.5">
+  <!-- ÜST HEADER (YALIN & KALİTELİ) -->
+  <header class="sticky top-0 z-40 bg-[#07090E]/90 backdrop-blur-md border-b border-white/5 px-4 lg:px-8 py-3">
     <div class="max-w-6xl mx-auto flex items-center justify-between">
       
-      <!-- Sol: Logo -->
-      <div class="flex items-center gap-2 cursor-pointer" onclick="navigate('markets')">
-        <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center font-black text-white text-base shadow-lg shadow-indigo-600/30">O</div>
-        <span class="font-extrabold text-lg text-white tracking-tight">OYVER</span>
-        <span class="text-[9px] bg-slate-800 text-slate-400 border border-slate-700 px-1.5 py-0.2 rounded font-bold ml-1">PRO</span>
+      <!-- LOGO -->
+      <div class="flex items-center gap-2.5 cursor-pointer" onclick="navigate('markets')">
+        <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center font-black text-white text-base shadow-lg shadow-indigo-500/25">O</div>
+        <div class="flex items-center gap-1.5">
+          <span class="font-extrabold text-lg text-white tracking-tight">OYVER</span>
+          <span class="text-[9px] bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-1.5 py-0.5 rounded-md font-bold uppercase tracking-wider">Terminal</span>
+        </div>
       </div>
 
-      <!-- Sağ: Profil ve Altında Küçük Bakiye -->
-      <div onclick="navigate('portfolio')" class="cursor-pointer flex flex-col items-end group">
-        <div class="flex items-center gap-1.5 text-xs font-bold text-slate-300 group-hover:text-white transition">
-          <span class="w-6 h-6 rounded-full bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center text-[11px]">👤</span>
-          <span id="header-username">Analist</span>
+      <!-- MASAÜSTÜ / TABLET ÜST GEZİNME (ASLA KAYBOLMAZ) -->
+      <nav class="hidden sm:flex items-center gap-1 bg-slate-900/80 p-1 rounded-xl border border-white/5 text-xs font-semibold">
+        <button onclick="navigate('markets')" id="top-nav-markets" class="px-3.5 py-1.5 rounded-lg bg-indigo-600 text-white transition">Piyasalar</button>
+        <button onclick="navigate('top100')" id="top-nav-top100" class="px-3.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition">Top 100</button>
+        <button onclick="navigate('zarla')" id="top-nav-zarla" class="px-3.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition flex items-center gap-1"><span>🎲</span> Zarla</button>
+        <button onclick="navigate('corporate')" id="top-nav-corporate" class="px-3.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition">Kurumsal</button>
+      </nav>
+
+      <!-- SAĞ PROFİL BUTONU (TIKLANABİLİR DOKUNMATİK ALAN) -->
+      <div onclick="navigate('portfolio')" class="cursor-pointer flex items-center gap-3 p-1.5 pr-3 bg-slate-900/60 hover:bg-slate-800/80 border border-white/5 hover:border-white/10 rounded-2xl transition">
+        <div class="w-7 h-7 rounded-xl bg-gradient-to-tr from-emerald-500/20 to-indigo-500/20 border border-emerald-500/30 flex items-center justify-center text-xs font-black text-emerald-400">
+          👤
         </div>
-        <!-- Bakiye: Profilin altına küçük ve zarif konumlandırıldı -->
-        <div class="text-[10px] text-slate-400 font-semibold tabular mt-0.5">
-          <span id="header-balance" class="text-emerald-400 font-bold">500</span> <span class="text-[9px] text-indigo-400">VERA</span>
+        <div class="flex flex-col text-right">
+          <span id="header-username" class="text-xs font-bold text-slate-200 leading-tight">Piyasa_Uzmanı</span>
+          <span class="text-[10px] text-slate-400 font-semibold tabular">
+            <strong id="header-balance" class="text-emerald-400 font-bold">500</strong> VERA
+          </span>
         </div>
       </div>
 
     </div>
   </header>
 
-  <!-- KATEGORİ ŞERİDİ -->
-  <div class="max-w-6xl mx-auto px-4 pt-3">
+  <!-- KATEGORİ ŞERİDİ (FİLTRE ÇALIŞIR HALE GETİRİLDİ) -->
+  <div class="max-w-6xl mx-auto px-4 pt-4 w-full">
     <div id="category-bar" class="flex gap-2 overflow-x-auto no-scrollbar pb-1 text-xs"></div>
   </div>
 
   <!-- ANA İÇERİK KONTEYNERİ -->
-  <main class="max-w-6xl mx-auto px-4 py-4 space-y-6">
+  <main class="max-w-6xl mx-auto px-4 py-4 space-y-6 w-full flex-1">
 
-    <!-- 1. GÖRÜNÜM: PİYASALAR (ANA AKIŞ) -->
-    <section id="tab-markets" class="space-y-6">
+    <!-- 1. GÖRÜNÜM: PİYASALAR -->
+    <section id="view-markets" class="space-y-6">
       
       <!-- GÜNÜN 3 HIZLI SORUSU -->
-      <div class="bg-gradient-to-r from-slate-900 to-indigo-950/40 border border-slate-800 rounded-2xl p-4 space-y-3">
+      <div class="glass-card rounded-3xl p-5 space-y-3.5 relative overflow-hidden">
+        <div class="absolute -right-10 -top-10 w-40 h-40 bg-indigo-500/5 rounded-full blur-3xl pointer-events-none"></div>
         <div class="flex justify-between items-center text-xs">
           <div class="flex items-center gap-2">
             <span class="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
-            <span class="font-bold text-slate-200">Günün 3 Hızlı Sorusu</span>
-            <span class="text-[10px] text-amber-400 bg-amber-950/60 border border-amber-800/60 px-1.5 py-0.5 rounded font-black">+50 VERA</span>
+            <span class="font-extrabold text-slate-100 tracking-wide uppercase text-[11px]">Günün 3 Hızlı Sorusu</span>
+            <span class="text-[10px] text-amber-400 bg-amber-400/10 border border-amber-400/20 px-2 py-0.5 rounded-full font-bold">+50 VERA</span>
           </div>
-          <span class="text-[11px] text-slate-400 font-semibold">1/3 Tamamlandı</span>
+          <span id="daily-status-counter" class="text-[11px] text-slate-400 font-medium">1/3 Yanıtlandı</span>
         </div>
-        <div id="daily-questions-list" class="space-y-2"></div>
+        <div id="daily-questions-list" class="space-y-2.5"></div>
       </div>
 
-      <!-- MANŞET İKİLİSİ (Canlı Saniye Sayacıyla) -->
+      <!-- GÜNÜN MANŞET İKİLİSİ (CANLI GERİ SAYIM) -->
       <div class="space-y-3">
-        <h2 class="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-          <span>⭐</span> Günün Manşet İkilisi
-        </h2>
+        <div class="flex justify-between items-center text-xs">
+          <h2 class="font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 text-[11px]">
+            <span>⭐</span> Günün Manşet İkilisi
+          </h2>
+          <span class="text-slate-500 text-[11px]">Canlı Likidite Havuzu</span>
+        </div>
         <div id="hero-markets-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
       </div>
 
       <!-- TOP 10 DERİNLİK TAHTASI -->
       <div class="space-y-3">
         <div class="flex justify-between items-center text-xs">
-          <h2 class="font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-            <span>🔥</span> En Çok Tahmin Edilen Top 10
+          <h2 class="font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 text-[11px]">
+            <span>🔥</span> En Çok Tahmin Edilenler
           </h2>
-          <span class="text-slate-500 text-[11px]">1 VERA = 1.00 TL Nominal</span>
+          <span class="text-slate-500 text-[11px]">1 Kazanan Pay = 1.00 VERA (1 TL)</span>
         </div>
-        <div id="top10-depth-board" class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden divide-y divide-slate-800/80"></div>
+        <div id="top10-depth-board" class="glass-card rounded-3xl overflow-hidden divide-y divide-white/5"></div>
       </div>
 
     </section>
 
     <!-- 2. GÖRÜNÜM: TOP 100 ANALİST LİGİ -->
-    <section id="tab-top100" class="hidden space-y-4">
-      <div class="border-b border-slate-800 pb-3">
-        <h2 class="text-xl font-black text-white">🏆 OYVER Top 100 Analist Ligi</h2>
-        <p class="text-xs text-slate-400">Analist Yetenek Puanı (AYP) sıralaması. Asgari 15 sonuçlanmış pazar şartı aranır.</p>
+    <section id="view-top100" class="hidden space-y-4">
+      <div class="border-b border-white/5 pb-3">
+        <h2 class="text-xl font-black text-white">🏆 OYVER Analist Ligi</h2>
+        <p class="text-xs text-slate-400 mt-0.5">Analist Yetenek Puanı (AYP) ve Brier Skoru sıralaması. Asgari 15 sonuçlanmış tahmin gerekir.</p>
       </div>
-      <div id="top100-list" class="bg-slate-900 border border-slate-800 rounded-2xl divide-y divide-slate-800"></div>
+      <div id="top100-list" class="glass-card rounded-3xl divide-y divide-white/5"></div>
     </section>
 
-    <!-- 3. GÖRÜNÜM: 🎲 ZARLA (TÜKETİCİ İKİLEMLERİ) -->
-    <section id="tab-zarla" class="hidden space-y-4 max-w-lg mx-auto">
+    <!-- 3. GÖRÜNÜM: 🎲 ZARLA ARENASI -->
+    <section id="view-zarla" class="hidden space-y-4 max-w-lg mx-auto">
       <div class="text-center space-y-1">
-        <h2 class="text-2xl font-black text-amber-400">🎲 ZARLA</h2>
-        <p class="text-xs text-slate-400">10 soruluk tüketici ikilemini tamamla, kitleyle uyuşma oranını öğren.</p>
+        <h2 class="text-2xl font-black text-amber-400 flex items-center justify-center gap-2"><span>🎲</span> ZARLA</h2>
+        <p class="text-xs text-slate-400">Tüketici ikilemlerini oyla, kitleyle uyuşma oranını anında gör.</p>
       </div>
-      <div id="zarla-card" class="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-5 text-center shadow-xl"></div>
+      <div id="zarla-card" class="glass-card rounded-3xl p-6 space-y-5 text-center shadow-2xl"></div>
     </section>
 
     <!-- 4. GÖRÜNÜM: PORTFÖY & CÜZDAN (ERKEN SATIŞ / CASHOUT) -->
-    <section id="tab-portfolio" class="hidden space-y-6 max-w-2xl mx-auto">
-      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+    <section id="view-portfolio" class="hidden space-y-6 max-w-2xl mx-auto">
+      
+      <!-- CÜZDAN KARTI -->
+      <div class="glass-card rounded-3xl p-6 space-y-4">
         <div class="flex justify-between items-start">
           <div>
             <div class="flex items-center gap-2">
-              <h3 id="prof-username" class="text-lg font-black text-white">Analist</h3>
-              <span class="text-[9px] font-black px-2 py-0.5 rounded bg-purple-950 text-purple-400 border border-purple-800">KIDEMLİ</span>
+              <h3 id="prof-username" class="text-lg font-black text-white">Piyasa_Uzmanı</h3>
+              <span class="text-[9px] font-black px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/30">KIDEMLİ</span>
             </div>
-            <div class="text-xs text-slate-400 mt-1">AYP Skoru: <strong class="text-white">716</strong> • Seri: <strong class="text-amber-400">3 Gün 🔥</strong></div>
+            <div class="text-xs text-slate-400 mt-1">AYP Reytingi: <strong class="text-white">716</strong> • Seri: <strong class="text-amber-400">3 Gün 🔥</strong></div>
           </div>
           <div class="text-right">
-            <div id="portfolio-balance" class="text-xl font-black text-emerald-400 tabular">500 VERA</div>
+            <div id="portfolio-balance" class="text-2xl font-black text-emerald-400 tabular">500 VERA</div>
             <div class="text-[10px] text-slate-500">1 VERA = 1.00 TL Nominal</div>
           </div>
         </div>
 
-        <!-- GSM ONAY KUTUSU -->
-        <div id="gsm-box" class="p-4 bg-slate-950 rounded-xl border border-indigo-900/60 space-y-2">
+        <!-- GSM DOĞRULAMA -->
+        <div id="gsm-box" class="p-4 bg-slate-950/70 rounded-2xl border border-indigo-500/20 space-y-2">
           <div class="flex justify-between items-center text-xs">
             <span class="font-bold text-white">📱 Telefon Doğrulaması (+9.500 VERA)</span>
-            <span class="text-[10px] text-amber-400 font-black">BEKLİYOR</span>
+            <span class="text-[10px] text-amber-400 font-bold bg-amber-400/10 px-2 py-0.5 rounded-full">BEKLİYOR</span>
           </div>
-          <p class="text-[11px] text-slate-400">Kalan hoş geldin bakiyenizi serbest bırakmak için telefonunuzu doğrulayın.</p>
-          <div class="flex gap-2">
-            <input type="text" id="gsm-phone" placeholder="+905XXXXXXXXX" class="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none">
-            <input type="text" id="gsm-code" placeholder="123456" class="w-24 bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white text-center focus:outline-none">
-            <button onclick="verifyPhone()" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition">Onayla</button>
+          <p class="text-[11px] text-slate-400">Bot hesapları engellemek için numaranızı onaylayıp hoş geldin bakiyenizi açın.</p>
+          <div class="flex gap-2 pt-1">
+            <input type="text" id="gsm-phone" placeholder="+905XXXXXXXXX" class="flex-1 bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500">
+            <input type="text" id="gsm-code" placeholder="123456" class="w-24 bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white text-center focus:outline-none focus:border-indigo-500">
+            <button onclick="verifyPhone()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition">Onayla</button>
           </div>
         </div>
       </div>
 
       <!-- AÇIK POZİSYONLAR & ERKEN SATIŞ -->
       <div class="space-y-3">
-        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">Açık Pozisyonlar & Erken Satış (Kâr Al)</h3>
+        <h3 class="text-xs font-bold text-slate-400 uppercase tracking-wider">Açık Pozisyonlar & Kâr Al (Erken Satış)</h3>
         <div id="positions-container" class="space-y-3"></div>
+      </div>
+    </section>
+
+    <!-- 5. GÖRÜNÜM: KURUMSAL & HAKKIMIZDA & İLETİŞİM -->
+    <section id="view-corporate" class="hidden space-y-6 max-w-3xl mx-auto">
+      <div class="glass-card rounded-3xl p-6 space-y-6">
+        <div class="border-b border-white/5 pb-4">
+          <h2 class="text-xl font-black text-white">OYVER Kurumsal & Şeffaflık Raporu</h2>
+          <p class="text-xs text-slate-400 mt-1">Türkiye'nin kolektif istihbarat ve tahmin piyasası altyapısı.</p>
+        </div>
+
+        <div class="space-y-3">
+          <h3 class="text-sm font-bold text-indigo-400 uppercase tracking-wider">Biz Kimiz?</h3>
+          <p class="text-xs text-slate-300 leading-relaxed">
+            OYVER; ekonomi, borsa, teknoloji ve toplumsal gündemdeki belirsizlikleri kitle zekâsıyla öngören bağımsız bir tahmin ve araştırma terminalidir. Sanal puan tabanlı çift kayıtlı defter altyapısıyla çalışır; şansa değil, rasyonel analize ve araştırma disiplinine dayanır.
+          </p>
+        </div>
+
+        <div class="space-y-3">
+          <h3 class="text-sm font-bold text-indigo-400 uppercase tracking-wider">Çözümleme ve Hakemlik İlkeleri</h3>
+          <p class="text-xs text-slate-300 leading-relaxed">
+            Her tahmin pazarı, yalnızca önceden ilan edilen resmî birincil kaynaklarla (T.C. Merkez Bankası bültenleri, Resmî Gazete tebliğleri, TFF hakem raporları, TÜİK bültenleri) çözümlenir. İkincil yorum veya söylentiler bağlayıcı kabul edilmez.
+          </p>
+        </div>
+
+        <div class="space-y-3">
+          <h3 class="text-sm font-bold text-indigo-400 uppercase tracking-wider">Hukuki Sınırlar & Regülasyon</h3>
+          <p class="text-xs text-slate-300 leading-relaxed">
+            OYVER üzerindeki VERA, kapalı devre bir oyunlaştırma ve analitik itibar göstergesidir; doğrudan nakdi bir karşılığı yoktur. Platformumuz 7258 sayılı Bahis Kanunu ve 6362 sayılı SPK Kanunu'nun piyasa dolandırıcılığı sınırları gözetilerek tasarlanmıştır.
+          </p>
+        </div>
+
+        <div class="p-4 bg-slate-950/80 rounded-2xl border border-white/5 space-y-2">
+          <h4 class="text-xs font-bold text-white">Kurumsal İletişim & Sponsorluk</h4>
+          <p class="text-xs text-slate-400">Pazar araştırmaları, kurumsal tahmin kupaları ve API entegrasyonu için:</p>
+          <div class="text-xs font-mono text-indigo-400">iletisim@oyver.pro • kurumsal@oyver.pro</div>
+        </div>
       </div>
     </section>
 
   </main>
 
-  <!-- İŞLEM MASASI MODALI (Slippage / Fiyat Kayması Önizlemeli) -->
-  <div id="modal-backdrop" onclick="closeModal()" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden"></div>
-  <div id="trade-modal" class="fixed bottom-0 md:top-1/2 md:left-1/2 md:-translate-x-1/2 md:-translate-y-1/2 w-full md:max-w-md bg-slate-900 border border-slate-800 rounded-t-3xl md:rounded-3xl p-6 z-50 hidden space-y-4">
+  <!-- İŞLEM MODALI (SLIPPAGE / FİYAT KAYMASI HESAPLAYICILI) -->
+  <div id="modal-backdrop" onclick="closeModal()" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 hidden transition-opacity"></div>
+  <div id="trade-modal" class="fixed bottom-0 sm:bottom-auto sm:top-1/2 sm:left-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2 w-full sm:max-w-md bg-slate-900 border-t sm:border border-white/10 rounded-t-3xl sm:rounded-3xl p-6 z-50 hidden space-y-4 shadow-2xl">
     <div id="modal-content"></div>
   </div>
 
-  <!-- MOBİL 4 SEKMELİ SABİT ALT BAR (PİYASALAR BURADA) -->
-  <nav class="md:hidden fixed bottom-0 left-0 right-0 bg-slate-950/95 border-t border-slate-800 backdrop-blur-md px-6 py-2.5 z-40 flex justify-between items-center text-[10px] font-bold text-slate-400">
-    <button onclick="navigate('markets')" id="btn-nav-mkt" class="flex flex-col items-center gap-1 text-indigo-400">
+  <!-- MOBİL / TABLET SABİT ALT NAVİGASYON (HER ZAMAN GÖRÜNÜR) -->
+  <nav class="sm:hidden fixed bottom-0 left-0 right-0 bg-[#07090E]/95 border-t border-white/10 backdrop-blur-xl px-4 py-2.5 z-40 flex justify-around items-center text-[10px] font-bold text-slate-400">
+    <button onclick="navigate('markets')" id="m-nav-markets" class="flex flex-col items-center gap-1 text-indigo-400">
       <span class="text-base">🌐</span>
       <span>Piyasalar</span>
     </button>
-    <button onclick="navigate('top100')" id="btn-nav-top100" class="flex flex-col items-center gap-1 hover:text-white">
+    <button onclick="navigate('top100')" id="m-nav-top100" class="flex flex-col items-center gap-1 hover:text-white">
       <span class="text-base">🏆</span>
       <span>Top 100</span>
     </button>
-    <button onclick="navigate('zarla')" id="btn-nav-zarla" class="flex flex-col items-center gap-1 hover:text-white">
+    <button onclick="navigate('zarla')" id="m-nav-zarla" class="flex flex-col items-center gap-1 hover:text-white">
       <span class="text-base">🎲</span>
       <span>Zarla</span>
     </button>
-    <button onclick="navigate('portfolio')" id="btn-nav-port" class="flex flex-col items-center gap-1 hover:text-white">
+    <button onclick="navigate('portfolio')" id="m-nav-portfolio" class="flex flex-col items-center gap-1 hover:text-white">
       <span class="text-base">💼</span>
       <span>Portföy</span>
     </button>
+    <button onclick="navigate('corporate')" id="m-nav-corporate" class="flex flex-col items-center gap-1 hover:text-white">
+      <span class="text-base">🏛️</span>
+      <span>Kurumsal</span>
+    </button>
   </nav>
 
-  <!-- AKORDİYON KURUMSAL FOOTER -->
-  <footer class="max-w-6xl mx-auto px-4 mt-12 border-t border-slate-800 pt-6 text-xs text-slate-400 space-y-4">
-    <div class="space-y-2">
-      <details class="group bg-slate-900 border border-slate-800 rounded-xl p-3">
-        <summary class="font-bold text-slate-200 cursor-pointer list-none flex justify-between items-center">
-          <span>Platform & Turnuvalar</span>
-          <span class="group-open:rotate-180 transition-transform">▾</span>
-        </summary>
-        <div class="pt-2.5 flex flex-col space-y-1.5 text-slate-400">
-          <p>OYVER, kitle zekâsı ve tahmin piyasaları araştırma altyapısıdır.</p>
-          <p>Kurumsal sponsorlu turnuvalar şansa değil analitik beceriye dayalıdır.</p>
-        </div>
-      </details>
-
-      <details class="group bg-slate-900 border border-slate-800 rounded-xl p-3">
-        <summary class="font-bold text-slate-200 cursor-pointer list-none flex justify-between items-center">
-          <span>Şeffaflık & Hukuki Durum</span>
-          <span class="group-open:rotate-180 transition-transform">▾</span>
-        </summary>
-        <div class="pt-2.5 flex flex-col space-y-1.5 text-slate-400 leading-relaxed">
-          <p>Tüm pazarlar resmî birincil kaynaklara (TCMB, Resmî Gazete, TFF) göre sonuçlandırılır.</p>
-          <p>Platformumuz 7258 sayılı Bahis Kanunu ve 6362 sayılı SPK Kanunu sınırları gözetilerek tasarlanmıştır.</p>
-        </div>
-      </details>
-    </div>
-
-    <div class="p-3 bg-slate-950 border border-slate-800/80 rounded-xl text-[11px] leading-relaxed text-slate-500">
-      <strong>⚠️ Hukuki Bilgilendirme [Taslak]:</strong> OYVER üzerindeki VERA, kapalı devre bir simülasyon ve itibar göstergesidir (1 VERA = 1.00 TL nominal). Yatırım tavsiyesi içermez.
-    </div>
-  </footer>
-
-  <!-- İSTEMCİ JAVASCRIPT MOTORU -->
+  <!-- İSTEMCİ JAVASCRIPT KONTROL MOTORU -->
   <script>
     let appData = null;
     let selectedMarket = null;
     let selectedOutcome = 'YES';
+    let currentCategory = 'Hepsi';
     let currentZarlaIndex = 0;
 
-    function showToast(msg) {
+    function showToast(msg, isSuccess = true) {
       const toast = document.getElementById('toast');
+      const icon = document.getElementById('toast-icon');
       document.getElementById('toast-msg').innerText = msg;
-      toast.classList.remove('-translate-y-24', 'opacity-0');
-      setTimeout(() => toast.classList.add('-translate-y-24', 'opacity-0'), 3000);
+      icon.innerText = isSuccess ? '✓' : '⚠️';
+      icon.className = isSuccess ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold';
+      toast.classList.remove('-translate-y-28', 'opacity-0');
+      setTimeout(() => toast.classList.add('-translate-y-28', 'opacity-0'), 3200);
     }
 
     async function loadData() {
@@ -713,9 +733,10 @@ async function bootstrap() {
     }
 
     function renderUI() {
-      // Header ve Portföy Bakiye
+      // Header ve Portföy
       document.getElementById('header-balance').innerText = Math.round(appData.currentUser.balanceTotal).toLocaleString();
       document.getElementById('header-username').innerText = appData.currentUser.username;
+      document.getElementById('prof-username').innerText = appData.currentUser.username;
       document.getElementById('portfolio-balance').innerText = Math.round(appData.currentUser.balanceTotal).toLocaleString() + ' VERA';
 
       if (appData.currentUser.isPhoneVerified) {
@@ -733,36 +754,61 @@ async function bootstrap() {
 
     function renderCategories() {
       const bar = document.getElementById('category-bar');
-      bar.innerHTML = appData.categories.map((c, i) => \`
-        <button class="px-3 py-1.5 rounded-lg font-bold whitespace-nowrap transition \${
-          i === 0 ? 'bg-indigo-600 text-white' : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-white'
+      bar.innerHTML = appData.categories.map(c => \`
+        <button onclick="filterCategory('\${c}')" class="px-3.5 py-1.5 rounded-xl font-bold whitespace-nowrap transition text-xs \${
+          currentCategory === c 
+            ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30' 
+            : 'bg-slate-900/80 border border-white/5 text-slate-400 hover:text-white'
         }">\${c}</button>
       \`).join('');
+    }
+
+    function filterCategory(cat) {
+      currentCategory = cat;
+      renderCategories();
+      renderHeroMarkets();
+      renderTop10Depth();
     }
 
     function renderDailyQuestions() {
       const container = document.getElementById('daily-questions-list');
       container.innerHTML = appData.dailyQuestions.map(q => \`
-        <div class="bg-slate-950 p-3 rounded-xl border border-slate-800/80 flex flex-col sm:flex-row justify-between sm:items-center gap-2 text-xs">
+        <div class="bg-slate-950/70 p-3.5 rounded-2xl border border-white/5 flex flex-col sm:flex-row justify-between sm:items-center gap-2.5 text-xs">
           <div class="min-w-0">
-            <span class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">\${q.category} • \${q.closeText}</span>
+            <span class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">\${q.category} • Kapanış: \${q.closeText}</span>
             <h4 class="font-bold text-slate-200 truncate mt-0.5">\${q.title}</h4>
           </div>
           <div class="flex items-center gap-2 shrink-0">
             \${q.userAnswer ? \`
-              <span class="px-3 py-1 rounded-lg text-[10px] font-black bg-emerald-950 text-emerald-400 border border-emerald-800">
+              <span class="px-3 py-1 rounded-xl text-[10px] font-black bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
                 Seçim: \${q.userAnswer}
               </span>
             \` : \`
-              <button onclick="showToast('Tahmin kaydedildi: +50 VERA!')" class="px-3 py-1 rounded-lg font-bold bg-slate-900 border border-slate-800 hover:border-emerald-500 text-emerald-400 transition">EVET (%\${q.probYes})</button>
-              <button onclick="showToast('Tahmin kaydedildi: +50 VERA!')" class="px-3 py-1 rounded-lg font-bold bg-slate-900 border border-slate-800 hover:border-rose-500 text-rose-400 transition">HAYIR (%\${q.probNo})</button>
+              <button onclick="submitDailyAnswer(\${q.id}, 'YES')" class="px-3 py-1.5 rounded-xl font-bold bg-slate-900 border border-emerald-500/30 hover:bg-emerald-500/20 text-emerald-400 transition">EVET (%\${q.probYes})</button>
+              <button onclick="submitDailyAnswer(\${q.id}, 'NO')" class="px-3 py-1.5 rounded-xl font-bold bg-slate-900 border border-rose-500/30 hover:bg-rose-500/20 text-rose-400 transition">HAYIR (%\${q.probNo})</button>
             \`}
           </div>
         </div>
       \`).join('');
     }
 
-    // Canlı Geri Sayım Biçimlendirici
+    async function submitDailyAnswer(id, outcome) {
+      const res = await fetch('/api/daily/answer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ questionId: id, outcome })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(data.message);
+        const q = appData.dailyQuestions.find(x => x.id === id);
+        if (q) q.userAnswer = outcome;
+        appData.currentUser.balanceTotal = data.newBalance;
+        document.getElementById('header-balance').innerText = Math.round(data.newBalance).toLocaleString();
+        renderDailyQuestions();
+      }
+    }
+
     function formatCountdown(targetDateStr) {
       const diff = new Date(targetDateStr).getTime() - new Date().getTime();
       if (diff <= 0) return '⏱️ İŞLEME KAPANDI';
@@ -776,24 +822,31 @@ async function bootstrap() {
     }
 
     function renderHeroMarkets() {
-      const heroes = appData.markets.filter(m => m.isHero);
+      const filtered = appData.markets.filter(m => currentCategory === 'Hepsi' || m.category === currentCategory);
+      const heroes = filtered.filter(m => m.isHero);
       const container = document.getElementById('hero-markets-grid');
+
+      if (heroes.length === 0) {
+        container.innerHTML = '<div class="col-span-2 glass-card p-6 rounded-2xl text-center text-xs text-slate-500">Bu kategoride öne çıkan manşet pazar bulunamadı.</div>';
+        return;
+      }
+
       container.innerHTML = heroes.map(m => \`
-        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between space-y-4">
+        <div class="glass-card glass-card-hover rounded-3xl p-5 flex flex-col justify-between space-y-4">
           <div>
             <div class="flex justify-between items-center text-[11px] mb-2">
-              <span class="bg-indigo-950 text-indigo-400 font-bold px-2 py-0.5 rounded border border-indigo-900">\${m.category}</span>
+              <span class="bg-indigo-500/10 text-indigo-400 font-bold px-2 py-0.5 rounded-lg border border-indigo-500/20">\${m.category}</span>
               <span class="font-mono text-amber-400 font-bold countdown-timer" data-target="\${m.closesAt}">\${formatCountdown(m.closesAt)}</span>
             </div>
             <h3 class="font-bold text-slate-100 text-sm leading-snug">\${m.title}</h3>
           </div>
           <div class="space-y-2">
             <div class="grid grid-cols-2 gap-2">
-              <button onclick="openTrade(\${m.id}, 'YES')" class="py-2.5 rounded-xl font-bold text-xs bg-slate-950 hover:border-emerald-500 border border-slate-800 text-emerald-400 flex justify-between px-3">
-                <span>EVET</span> <span class="tabular">%\${m.probYes}</span>
+              <button onclick="openTrade(\${m.id}, 'YES')" class="py-2.5 rounded-2xl font-bold text-xs bg-slate-950/80 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 flex justify-between px-3 transition">
+                <span>EVET</span> <span class="tabular font-black">%\${m.probYes}</span>
               </button>
-              <button onclick="openTrade(\${m.id}, 'NO')" class="py-2.5 rounded-xl font-bold text-xs bg-slate-950 hover:border-rose-500 border border-slate-800 text-rose-400 flex justify-between px-3">
-                <span>HAYIR</span> <span class="tabular">%\${m.probNo}</span>
+              <button onclick="openTrade(\${m.id}, 'NO')" class="py-2.5 rounded-2xl font-bold text-xs bg-slate-950/80 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 flex justify-between px-3 transition">
+                <span>HAYIR</span> <span class="tabular font-black">%\${m.probNo}</span>
               </button>
             </div>
             <div class="flex justify-between text-[10px] text-slate-500 pt-1">
@@ -806,15 +859,22 @@ async function bootstrap() {
     }
 
     function renderTop10Depth() {
+      const filtered = appData.markets.filter(m => currentCategory === 'Hepsi' || m.category === currentCategory);
       const container = document.getElementById('top10-depth-board');
-      container.innerHTML = appData.markets.map((m, idx) => \`
-        <div onclick="openTrade(\${m.id}, 'YES')" class="p-3.5 flex items-center justify-between gap-4 text-xs hover:bg-slate-800/40 transition cursor-pointer">
+
+      if (filtered.length === 0) {
+        container.innerHTML = '<div class="p-6 text-center text-xs text-slate-500">Pazar bulunamadı.</div>';
+        return;
+      }
+
+      container.innerHTML = filtered.map((m, idx) => \`
+        <div onclick="openTrade(\${m.id}, 'YES')" class="p-4 flex items-center justify-between gap-4 text-xs hover:bg-white/5 transition cursor-pointer">
           <div class="flex items-center gap-3 min-w-0">
             <span class="font-black text-slate-500 w-5">#\${idx + 1}</span>
             <span class="font-bold text-slate-200 truncate">\${m.title}</span>
           </div>
           <div class="flex items-center gap-4 shrink-0">
-            <span class="text-slate-400 text-[11px] hidden sm:inline">\${m.totalPredictionsCount} Tahmin</span>
+            <span class="text-slate-500 text-[11px] hidden sm:inline">\${m.totalPredictionsCount} Tahmin</span>
             <div class="flex items-center gap-1.5 w-28">
               <span class="text-emerald-400 font-bold tabular">%\${m.probYes}</span>
               <div class="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden flex">
@@ -842,9 +902,11 @@ async function bootstrap() {
             <span class="font-black text-slate-500 w-6">#\${a.rank}</span>
             <div>
               <div class="font-bold text-slate-200">\${a.username}</div>
-              <div class="text-[10px] text-slate-500">\${a.settledCount} Pazar Geçmişi</div>
+              <div class="text-[10px] text-slate-500">\${a.settledCount} Pazar Tahmini</div>
             </div>
-            <span class="text-[9px] font-black px-1.5 py-0.2 rounded \${a.tier === 'USTA' ? 'bg-amber-950 text-amber-400 border border-amber-800' : 'bg-purple-950 text-purple-400 border border-purple-800'}">\${a.tier}</span>
+            <span class="text-[9px] font-black px-2 py-0.5 rounded-full \${
+              a.tier === 'USTA' ? 'bg-amber-400/10 text-amber-400 border border-amber-400/30' : 'bg-indigo-400/10 text-indigo-400 border border-indigo-400/30'
+            }">\${a.tier}</span>
           </div>
           <div class="text-right">
             <div class="font-black text-emerald-400 text-sm tabular">\${a.rating} AYP</div>
@@ -861,16 +923,16 @@ async function bootstrap() {
       const pctB = 100 - pctA;
 
       document.getElementById('zarla-card').innerHTML = \`
-        <div class="text-[11px] text-slate-500 font-bold uppercase tracking-wider">\${currentZarlaIndex + 1} / \${appData.zarlaQuestions.length} • \${q.sponsor}</div>
+        <div class="text-[11px] text-indigo-400 font-bold uppercase tracking-wider">\${currentZarlaIndex + 1} / \${appData.zarlaQuestions.length} • \${q.sponsor}</div>
         <h3 class="text-xl font-black text-white">\${q.itemA} mı, \${q.itemB} mi?</h3>
         <div class="grid grid-cols-2 gap-3 pt-2">
-          <button onclick="voteZarla()" class="py-6 rounded-2xl bg-slate-950 border border-slate-800 hover:border-indigo-500 text-sm font-black transition">
+          <button onclick="voteZarla()" class="py-7 rounded-3xl bg-slate-950/80 border border-white/10 hover:border-indigo-500 text-sm font-black transition">
             \${q.itemA}
-            <div class="text-[10px] text-slate-500 font-normal mt-1">%\${pctA} Kitle Oyu</div>
+            <div class="text-[11px] text-slate-400 font-normal mt-1">%\${pctA} Kitle Oyu</div>
           </button>
-          <button onclick="voteZarla()" class="py-6 rounded-2xl bg-slate-950 border border-slate-800 hover:border-indigo-500 text-sm font-black transition">
+          <button onclick="voteZarla()" class="py-7 rounded-3xl bg-slate-950/80 border border-white/10 hover:border-indigo-500 text-sm font-black transition">
             \${q.itemB}
-            <div class="text-[10px] text-slate-500 font-normal mt-1">%\${pctB} Kitle Oyu</div>
+            <div class="text-[11px] text-slate-400 font-normal mt-1">%\${pctB} Kitle Oyu</div>
           </button>
         </div>
       \`;
@@ -881,7 +943,7 @@ async function bootstrap() {
         currentZarlaIndex++;
         renderZarla();
       } else {
-        showToast('Zarla serisi tamamlandı! Tercihlerin kitleyle kaydedildi.');
+        showToast('Zarla anketi tamamlandı! Tercihlerin kitleyle kaydedildi.');
         currentZarlaIndex = 0;
         renderZarla();
       }
@@ -890,15 +952,15 @@ async function bootstrap() {
     function renderPositions() {
       const container = document.getElementById('positions-container');
       if (!appData.currentUser.positions || appData.currentUser.positions.length === 0) {
-        container.innerHTML = '<div class="p-4 text-center text-xs text-slate-500 bg-slate-950 rounded-xl">Açık pozisyonunuz bulunmuyor.</div>';
+        container.innerHTML = '<div class="p-6 text-center text-xs text-slate-500 glass-card rounded-2xl">Açık pozisyonunuz bulunmuyor.</div>';
         return;
       }
 
       container.innerHTML = appData.currentUser.positions.map(p => \`
-        <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 flex justify-between items-center text-xs">
+        <div class="glass-card p-4 rounded-2xl flex justify-between items-center text-xs">
           <div class="space-y-1">
             <div class="flex items-center gap-2">
-              <span class="text-[9px] font-black px-1.5 py-0.5 rounded \${p.outcome === 'YES' ? 'bg-emerald-950 text-emerald-400' : 'bg-rose-950 text-rose-400'}">\${p.outcome}</span>
+              <span class="text-[9px] font-black px-2 py-0.5 rounded-md \${p.outcome === 'YES' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'}">\${p.outcome}</span>
               <h4 class="font-bold text-white">\${p.marketTitle}</h4>
             </div>
             <div class="text-[11px] text-slate-400">Yatırılan: \${Math.round(p.totalCostVera)} VERA • Pay: \${p.sharesCount}</div>
@@ -907,7 +969,7 @@ async function bootstrap() {
             <div class="font-bold \${p.pnlVera >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
               \${p.pnlVera >= 0 ? '+' : ''}\${p.pnlVera} VERA (%\${p.pnlPercent})
             </div>
-            <button onclick="cashoutPosition(\${p.id})" class="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 rounded-lg font-bold text-[10px] transition">
+            <button onclick="cashoutPosition(\${p.id})" class="px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 rounded-xl font-bold text-[10px] transition">
               Erken Sat (\${Math.round(p.currentCashoutValue)} VERA)
             </button>
           </div>
@@ -932,25 +994,30 @@ async function bootstrap() {
       const m = selectedMarket;
       document.getElementById('modal-content').innerHTML = \`
         <div class="space-y-1">
-          <span class="text-[10px] font-bold text-indigo-400 uppercase">\${m.category}</span>
-          <h3 class="font-bold text-white text-sm leading-snug">\${m.title}</h3>
+          <span class="text-[10px] font-bold text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 px-2 py-0.5 rounded-md uppercase">\${m.category}</span>
+          <h3 class="font-bold text-white text-sm leading-snug mt-1">\${m.title}</h3>
         </div>
 
         <div class="grid grid-cols-2 gap-2 pt-2">
-          <button onclick="selectedOutcome='YES'; renderModal()" class="py-2 rounded-xl font-bold text-xs border \${selectedOutcome === 'YES' ? 'bg-emerald-600 border-emerald-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}">EVET (%\${m.probYes})</button>
-          <button onclick="selectedOutcome='NO'; renderModal()" class="py-2 rounded-xl font-bold text-xs border \${selectedOutcome === 'NO' ? 'bg-rose-600 border-rose-500 text-white' : 'bg-slate-800 border-slate-700 text-slate-400'}">HAYIR (%\${m.probNo})</button>
+          <button onclick="selectedOutcome='YES'; renderModal()" class="py-2.5 rounded-2xl font-bold text-xs border transition \${selectedOutcome === 'YES' ? 'bg-emerald-500 border-emerald-400 text-slate-950 font-black' : 'bg-slate-950 border-white/10 text-slate-400'}">EVET (%\${m.probYes})</button>
+          <button onclick="selectedOutcome='NO'; renderModal()" class="py-2.5 rounded-2xl font-bold text-xs border transition \${selectedOutcome === 'NO' ? 'bg-rose-500 border-rose-400 text-slate-950 font-black' : 'bg-slate-950 border-white/10 text-slate-400'}">HAYIR (%\${m.probNo})</button>
         </div>
 
-        <div class="space-y-1 pt-2">
+        <div class="space-y-1.5 pt-2">
           <label class="text-[11px] text-slate-400 font-bold">Yatırılacak Tutar (VERA)</label>
-          <input type="number" id="trade-input" value="100" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-base font-bold text-white text-center focus:outline-none">
-          <div class="flex justify-between text-[11px] text-slate-500 pt-1">
-            <span>Mevcut: \${Math.round(appData.currentUser.balanceTotal)} VERA</span>
-            <span>1 Kazanan Pay = 1.00 VERA (1 TL)</span>
+          <input type="number" id="trade-input" value="100" class="w-full bg-slate-950 border border-white/10 rounded-2xl px-4 py-2.5 text-base font-bold text-white text-center focus:outline-none focus:border-indigo-500">
+          <div class="flex justify-between text-[11px] text-slate-400 pt-1">
+            <span>Bakiye: \${Math.round(appData.currentUser.balanceTotal)} VERA</span>
+            <span>1 Pay = 1.00 VERA</span>
           </div>
         </div>
 
-        <button onclick="executeBuy()" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold text-xs transition">Tahmini Onayla</button>
+        <div class="p-3 bg-slate-950/80 rounded-2xl border border-white/5 text-[11px] text-slate-400 space-y-1">
+          <div class="font-bold text-slate-300">Çözümleme Belgesi</div>
+          <p class="leading-relaxed">\${m.rules}</p>
+        </div>
+
+        <button onclick="executeBuy()" class="w-full py-3.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl font-bold text-xs shadow-xl shadow-indigo-600/30 transition">Tahmini Onayla</button>
       \`;
     }
 
@@ -967,12 +1034,12 @@ async function bootstrap() {
         showToast(\`Tahmin onaylandı: \${data.quote.sharesReceived} Pay alındı.\`);
         loadData();
       } else {
-        alert(data.message);
+        showToast(data.message, false);
       }
     }
 
     async function cashoutPosition(posId) {
-      if (!confirm('Pozisyonunuzu anlık piyasa fiyatından havuza satarak erken nakde çıkmak istiyor musunuz?')) return;
+      if (!confirm('Pozisyonunuzu anlık piyasa fiyatından erken satarak nakde dönmek istiyor musunuz?')) return;
       const res = await fetch('/api/trade/cashout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -983,7 +1050,7 @@ async function bootstrap() {
         showToast(data.message);
         loadData();
       } else {
-        alert(data.message);
+        showToast(data.message, false);
       }
     }
 
@@ -996,22 +1063,38 @@ async function bootstrap() {
         body: JSON.stringify({ phone, code })
       });
       const data = await res.json();
-      showToast(data.message);
+      showToast(data.message, data.success);
       if (data.success) loadData();
     }
 
+    // EVRENSEL VE GARANTİLİ NAVİGASYON (HER EKRANDA ÇALIŞIR)
     function navigate(tab) {
-      ['markets', 'top100', 'zarla', 'portfolio'].forEach(t => {
-        document.getElementById('tab-' + t).classList.add('hidden');
-      });
-      document.getElementById('tab-' + tab).classList.remove('hidden');
+      ['markets', 'top100', 'zarla', 'portfolio', 'corporate'].forEach(t => {
+        const el = document.getElementById('view-' + t);
+        if (el) el.classList.add('hidden');
 
-      // Buton Aktiflik Renkleri
-      ['mkt', 'top100', 'zarla', 'port'].forEach(b => {
-        document.getElementById('btn-nav-' + b).className = 'flex flex-col items-center gap-1 text-slate-400 hover:text-white';
+        // Üst Menü Aktifliği
+        const topBtn = document.getElementById('top-nav-' + t);
+        if (topBtn) {
+          topBtn.className = 'px-3.5 py-1.5 rounded-lg text-slate-400 hover:text-white transition';
+        }
+
+        // Alt Menü Aktifliği
+        const mBtn = document.getElementById('m-nav-' + t);
+        if (mBtn) {
+          mBtn.className = 'flex flex-col items-center gap-1 text-slate-400 hover:text-white';
+        }
       });
-      const activeMap = { markets: 'mkt', top100: 'top100', zarla: 'zarla', portfolio: 'port' };
-      document.getElementById('btn-nav-' + activeMap[tab]).className = 'flex flex-col items-center gap-1 text-indigo-400';
+
+      const activeView = document.getElementById('view-' + tab);
+      if (activeView) activeView.classList.remove('hidden');
+
+      const activeTop = document.getElementById('top-nav-' + tab);
+      if (activeTop) activeTop.className = 'px-3.5 py-1.5 rounded-lg bg-indigo-600 text-white transition';
+
+      const activeMob = document.getElementById('m-nav-' + tab);
+      if (activeMob) activeMob.className = 'flex flex-col items-center gap-1 text-indigo-400';
+
       window.scrollTo(0, 0);
     }
 
