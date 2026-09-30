@@ -1,7 +1,15 @@
 export const SYSTEM_CONFIG = {
-  MODE: (process.env.SYSTEM_MODE || 'SIMULATION') as 'SIMULATION' | 'LICENSED_FIAT',
-  CURRENCY_NAME: 'VERA',
-  CURRENCY_SYMBOL: 'VERA',
-  FIAT_PARITY: 1.0,
-  WITHHOLDING_TAX_RATE: process.env.SYSTEM_MODE === 'LICENSED_FIAT' ? 0.20 : 0.00
+  PLATFORM_NAME: 'OYVER',
+  PLATFORM_TAGLINE: 'Türkiye Kitle Zekâsı ve Tahmin Pazarı Terminali',
+  
+  // Kesinlikle nakit değeri olmayan, kapalı devre itibar puanı
+  CURRENCY_NAME: 'KOR',
+  CURRENCY_SYMBOL: 'KOR',
+  
+  // %1.0 İşlem Harcı Yakımı (Deflasyonist Sink)
+  TRANSACTION_FEE_BURN_RATE: 0.01,
+  
+  // Kurumsal İletişim Bilgileri
+  CORPORATE_EMAIL: 'iletisim@oyver.pro',
+  PARTNERSHIP_EMAIL: 'ortaklik@oyver.pro'
 };
