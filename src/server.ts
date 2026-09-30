@@ -4,7 +4,7 @@ import helmet from '@fastify/helmet';
 import WebSocket, { WebSocketServer } from 'ws';
 import { db } from './db';
 import { markets, users, positions, veraTransactions } from './db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { AmmEngine } from './modules/amm/engine';
 import { SYSTEM_CONFIG } from './config/system';
 
@@ -14,6 +14,81 @@ async function bootstrap() {
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, { origin: '*' });
 
+  // 1. OTOMATİK VERİTABANI TABLO OLUŞTURUCU (MIGRATION ENGINE)
+  async function initDatabaseTables() {
+    try {
+      await db.execute(sql`
+        CREATE TABLE IF NOT EXISTS users (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          username VARCHAR(32) NOT NULL UNIQUE,
+          phone_number VARCHAR(20) UNIQUE,
+          is_phone_verified BOOLEAN NOT NULL DEFAULT false,
+          tckn VARCHAR(11) UNIQUE,
+          legal_first_name VARCHAR(64),
+          legal_last_name VARCHAR(64),
+          birth_year INTEGER,
+          iban VARCHAR(34),
+          kyc_status VARCHAR(16) NOT NULL DEFAULT 'UNVERIFIED',
+          balance_vera_withdrawable NUMERIC(18, 4) NOT NULL DEFAULT 0.0000,
+          balance_vera_promo NUMERIC(18, 4) NOT NULL DEFAULT 500.0000,
+          current_streak INTEGER NOT NULL DEFAULT 1,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE TABLE IF NOT EXISTS vera_transactions (
+          id BIGSERIAL PRIMARY KEY,
+          user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          account_type VARCHAR(16) NOT NULL,
+          type VARCHAR(32) NOT NULL,
+          amount NUMERIC(18, 4) NOT NULL,
+          tax_withheld_vera NUMERIC(18, 4) NOT NULL DEFAULT 0.0000,
+          balance_after NUMERIC(18, 4) NOT NULL,
+          reference_id VARCHAR(64),
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE TABLE IF NOT EXISTS markets (
+          id SERIAL PRIMARY KEY,
+          slug VARCHAR(128) NOT NULL UNIQUE,
+          title VARCHAR(255) NOT NULL,
+          category VARCHAR(64) NOT NULL,
+          rules TEXT NOT NULL,
+          source_name VARCHAR(128) NOT NULL,
+          source_url VARCHAR(512),
+          starts_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          closes_at TIMESTAMPTZ NOT NULL,
+          resolved_at TIMESTAMPTZ,
+          status VARCHAR(32) NOT NULL DEFAULT 'TRADING',
+          winning_outcome VARCHAR(8),
+          pool_yes NUMERIC(18, 4) NOT NULL DEFAULT 10000.0000,
+          pool_no NUMERIC(18, 4) NOT NULL DEFAULT 10000.0000,
+          volume_vera NUMERIC(18, 4) NOT NULL DEFAULT 0.0000,
+          total_predictions_count INTEGER NOT NULL DEFAULT 0,
+          is_hero BOOLEAN NOT NULL DEFAULT false,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
+        CREATE TABLE IF NOT EXISTS positions (
+          id BIGSERIAL PRIMARY KEY,
+          user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          market_id INTEGER NOT NULL REFERENCES markets(id) ON DELETE CASCADE,
+          outcome VARCHAR(8) NOT NULL,
+          shares_count NUMERIC(18, 4) NOT NULL,
+          total_cost_vera NUMERIC(18, 4) NOT NULL,
+          is_settled BOOLEAN NOT NULL DEFAULT false,
+          is_closed_early BOOLEAN NOT NULL DEFAULT false,
+          cashout_return_vera NUMERIC(18, 4),
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+      `);
+      console.log('✓ Veritabanı tabloları başarıyla doğrulandı.');
+    } catch (err) {
+      console.error('Tablo oluşturma hatası:', err);
+    }
+  }
+
+  // 2. OTURUM YÖNETİCİSİ
   async function getOrCreateActiveUser() {
     let user = await db.query.users.findFirst();
     if (!user) {
@@ -37,10 +112,13 @@ async function bootstrap() {
     return user;
   }
 
+  // 3. TOHUM PAZARLARI (İLK AÇILIŞ)
   async function seedMarketsIfEmpty() {
     try {
-      const existing = await db.query.markets.findFirst();
-      if (!existing) {
+      const countRes = await db.execute(sql`SELECT count(*)::int as count FROM markets`);
+      const count = (countRes[0] as any)?.count || 0;
+
+      if (count === 0) {
         const now = new Date();
         await db.insert(markets).values([
           {
@@ -86,74 +164,81 @@ async function bootstrap() {
             isHero: false
           }
         ]);
+        console.log('✓ Başlangıç tahmin pazarları yüklendi.');
       }
     } catch (e) {
-      console.log('Tablo kontrolü tamamlandı.');
+      console.error('Tohum pazar yükleme hatası:', e);
     }
   }
 
-  app.get('/api/state', async () => {
-    const user = await getOrCreateActiveUser();
-    const marketList = await db.query.markets.findMany();
-    const userPositions = await db.query.positions.findMany({
-      where: and(eq(positions.userId, user.id), eq(positions.isClosedEarly, false))
-    });
+  // 4. API: DURUM SORGULAMA
+  app.get('/api/state', async (_req, reply) => {
+    try {
+      const user = await getOrCreateActiveUser();
+      const marketList = await db.query.markets.findMany();
+      const userPositions = await db.query.positions.findMany({
+        where: and(eq(positions.userId, user.id), eq(positions.isClosedEarly, false))
+      });
 
-    const enrichedMarkets = marketList.map(m => {
-      const prices = AmmEngine.getSpotPrices(Number(m.poolYes), Number(m.poolNo));
+      const enrichedMarkets = marketList.map(m => {
+        const prices = AmmEngine.getSpotPrices(Number(m.poolYes), Number(m.poolNo));
+        return {
+          ...m,
+          probYes: prices.probYes,
+          probNo: prices.probNo,
+          priceYesVera: prices.priceYesVera,
+          priceNoVera: prices.priceNoVera
+        };
+      });
+
+      const enrichedPositions = userPositions.map(pos => {
+        const m = marketList.find(x => x.id === pos.marketId);
+        let currentCashoutValue = 0;
+        if (m && m.status === 'TRADING') {
+          const sellQuote = AmmEngine.calculateSell(
+            Number(m.poolYes),
+            Number(m.poolNo),
+            pos.outcome as any,
+            Number(pos.sharesCount)
+          );
+          currentCashoutValue = sellQuote.veraReturned;
+        }
+        const cost = Number(pos.totalCostVera);
+        const pnlVera = Math.round((currentCashoutValue - cost) * 100) / 100;
+        const pnlPercent = cost > 0 ? Math.round(((currentCashoutValue - cost) / cost) * 100) : 0;
+
+        return {
+          ...pos,
+          currentCashoutValue,
+          pnlVera,
+          pnlPercent,
+          marketTitle: m?.title || 'Pazar'
+        };
+      });
+
+      const totalBalance = Number(user.balanceVeraPromo) + Number(user.balanceVeraWithdrawable);
+
       return {
-        ...m,
-        probYes: prices.probYes,
-        probNo: prices.probNo,
-        priceYesVera: prices.priceYesVera,
-        priceNoVera: prices.priceNoVera
+        success: true,
+        systemMode: SYSTEM_CONFIG.MODE,
+        currency: SYSTEM_CONFIG.CURRENCY_SYMBOL,
+        currentUser: {
+          id: user.id,
+          username: user.username,
+          isPhoneVerified: user.isPhoneVerified,
+          balanceTotal: totalBalance,
+          balancePromo: Number(user.balanceVeraPromo),
+          balanceWithdrawable: Number(user.balanceVeraWithdrawable),
+          positions: enrichedPositions
+        },
+        markets: enrichedMarkets
       };
-    });
-
-    const enrichedPositions = userPositions.map(pos => {
-      const m = marketList.find(x => x.id === pos.marketId);
-      let currentCashoutValue = 0;
-      if (m && m.status === 'TRADING') {
-        const sellQuote = AmmEngine.calculateSell(
-          Number(m.poolYes),
-          Number(m.poolNo),
-          pos.outcome as any,
-          Number(pos.sharesCount)
-        );
-        currentCashoutValue = sellQuote.veraReturned;
-      }
-      const cost = Number(pos.totalCostVera);
-      const pnlVera = Math.round((currentCashoutValue - cost) * 100) / 100;
-      const pnlPercent = cost > 0 ? Math.round(((currentCashoutValue - cost) / cost) * 100) : 0;
-
-      return {
-        ...pos,
-        currentCashoutValue,
-        pnlVera,
-        pnlPercent,
-        marketTitle: m?.title || 'Pazar'
-      };
-    });
-
-    const totalBalance = Number(user.balanceVeraPromo) + Number(user.balanceVeraWithdrawable);
-
-    return {
-      success: true,
-      systemMode: SYSTEM_CONFIG.MODE,
-      currency: SYSTEM_CONFIG.CURRENCY_SYMBOL,
-      currentUser: {
-        id: user.id,
-        username: user.username,
-        isPhoneVerified: user.isPhoneVerified,
-        balanceTotal: totalBalance,
-        balancePromo: Number(user.balanceVeraPromo),
-        balanceWithdrawable: Number(user.balanceVeraWithdrawable),
-        positions: enrichedPositions
-      },
-      markets: enrichedMarkets
-    };
+    } catch (err: any) {
+      reply.status(500).send({ success: false, message: err.message });
+    }
   });
 
+  // 5. API: ALIŞ İŞLEMİ
   app.post('/api/trade/buy', async (req: any, reply) => {
     const { marketId, outcome, amountVera } = req.body;
     const user = await getOrCreateActiveUser();
@@ -220,6 +305,7 @@ async function bootstrap() {
     return { success: true, quote, newBalance: newPromo + newWithdrawable };
   });
 
+  // 6. API: ERKEN SATIŞ (CASHOUT)
   app.post('/api/trade/cashout', async (req: any, reply) => {
     const { positionId } = req.body;
     const user = await getOrCreateActiveUser();
@@ -280,6 +366,7 @@ async function bootstrap() {
     };
   });
 
+  // 7. API: TELEFON DOĞRULAMA
   app.post('/api/auth/verify-phone', async (req: any, reply) => {
     const { phone, code } = req.body;
     const user = await getOrCreateActiveUser();
@@ -311,6 +398,7 @@ async function bootstrap() {
     return reply.status(400).send({ success: false, message: 'Geçersiz SMS kodu.' });
   });
 
+  // 8. ÖN YÜZ HTML ARAYÜZÜ
   app.get('/', async (_req, reply) => {
     reply.type('text/html; charset=utf-8');
     return `
@@ -344,7 +432,7 @@ async function bootstrap() {
       <div class="flex items-center gap-3">
         <div onclick="navigate('portfolio')" class="cursor-pointer bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl px-3 py-1.5 flex items-center gap-2">
           <span class="text-xs text-slate-400">Bakiye:</span>
-          <span id="header-balance" class="font-bold text-xs text-emerald-400 tabular">500</span>
+          <span id="header-balance" class="font-bold text-xs text-emerald-400 tabular">...</span>
           <span class="text-[10px] font-black text-indigo-400 bg-indigo-950 px-1.5 py-0.5 rounded border border-indigo-900">VERA</span>
         </div>
       </div>
@@ -361,7 +449,9 @@ async function bootstrap() {
           </h2>
           <span class="text-[11px] text-slate-500">1 VERA = 1.00 TL</span>
         </div>
-        <div id="markets-container" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+        <div id="markets-container" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="p-8 text-center text-xs text-slate-500 col-span-2">Pazarlar yükleniyor...</div>
+        </div>
       </div>
     </section>
 
@@ -373,7 +463,7 @@ async function bootstrap() {
             <p class="text-xs text-slate-400">Pazar bitmeden kâr alıp çıkabilir veya sonucu bekleyebilirsiniz.</p>
           </div>
           <div class="text-right">
-            <div id="portfolio-balance" class="text-xl font-black text-emerald-400 tabular">500 VERA</div>
+            <div id="portfolio-balance" class="text-xl font-black text-emerald-400 tabular">0 VERA</div>
             <div class="text-[10px] text-slate-500">1 VERA = 1.00 TL Nominal</div>
           </div>
         </div>
@@ -427,9 +517,17 @@ async function bootstrap() {
     }
 
     async function loadData() {
-      const res = await fetch('/api/state');
-      appData = await res.json();
-      renderUI();
+      try {
+        const res = await fetch('/api/state');
+        appData = await res.json();
+        if (appData.success) {
+          renderUI();
+        } else {
+          document.getElementById('markets-container').innerHTML = '<div class="p-8 text-center text-xs text-rose-400 col-span-2">Veritabanı bağlantısı hazırlanıyor, lütfen 10 saniye sonra sayfayı yenileyin.</div>';
+        }
+      } catch (e) {
+        document.getElementById('markets-container').innerHTML = '<div class="p-8 text-center text-xs text-rose-400 col-span-2">Bağlantı kuruluyor...</div>';
+      }
     }
 
     function renderUI() {
@@ -458,6 +556,11 @@ async function bootstrap() {
 
     function renderMarkets() {
       const container = document.getElementById('markets-container');
+      if (!appData.markets || appData.markets.length === 0) {
+        container.innerHTML = '<div class="p-8 text-center text-xs text-slate-500 col-span-2">Henüz aktif pazar bulunmuyor.</div>';
+        return;
+      }
+
       container.innerHTML = appData.markets.map(m => \`
         <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between space-y-4">
           <div>
@@ -493,7 +596,7 @@ async function bootstrap() {
 
     function renderPositions() {
       const container = document.getElementById('positions-container');
-      if (appData.currentUser.positions.length === 0) {
+      if (!appData.currentUser.positions || appData.currentUser.positions.length === 0) {
         container.innerHTML = '<div class="p-4 text-center text-xs text-slate-500 bg-slate-950 rounded-xl">Açık pozisyonunuz bulunmuyor.</div>';
         return;
       }
@@ -628,6 +731,10 @@ async function bootstrap() {
   const PORT = Number(process.env.PORT) || 3000;
   const HOST = '0.0.0.0';
 
+  // Sunucu başlamadan önce tabloları ve pazarları garantiye al
+  await initDatabaseTables();
+  await seedMarketsIfEmpty();
+
   await app.listen({ port: PORT, host: HOST });
   console.log(`OYVER Motoru ayakta: http://${HOST}:${PORT}`);
 
@@ -638,8 +745,6 @@ async function bootstrap() {
       if (c.readyState === WebSocket.OPEN) c.send(data);
     });
   }
-
-  await seedMarketsIfEmpty();
 }
 
 bootstrap().catch(err => {
