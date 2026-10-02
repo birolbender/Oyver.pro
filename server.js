@@ -36,7 +36,7 @@ class AMMEngine {
 }
 
 // ==========================================
-// 2. VERİTABANI BAĞLANTISI VE TABLOLAR
+// 2. VERİTABANI BAĞLANTISI VE OTOMATİK MİGRASYON
 // ==========================================
 pg.types.setTypeParser(1700, (val) => val);
 const pool = new pg.Pool({
@@ -63,6 +63,8 @@ async function initDatabase() {
     const client = await pool.connect();
     try {
         console.info('[DATABASE] Şema ve tablolar doğrulanıyor...');
+        
+        // 1. Tabloları oluştur
         await client.query(`
             CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
@@ -124,9 +126,28 @@ async function initDatabase() {
             );
         `);
 
-        // Demo Kullanıcıları ve Top 100 Kahin Başlangıç Verisi
+        // 2. OTOMATİK MİGRASYON: Eski veritabanı tablolarındaki eksik sütunları ekle
+        console.info('[DATABASE] Sütun migrasyonları uygulanıyor...');
+        await client.query(`
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS balance_kor NUMERIC(24,6) NOT NULL DEFAULT 14500.000000;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS streak INT NOT NULL DEFAULT 5;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS quests_today INT NOT NULL DEFAULT 0;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS quest_rewarded BOOLEAN NOT NULL DEFAULT FALSE;
+
+            ALTER TABLE markets ADD COLUMN IF NOT EXISTS is_sponsored BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE markets ADD COLUMN IF NOT EXISTS sponsored_by VARCHAR(128);
+            ALTER TABLE markets ADD COLUMN IF NOT EXISTS closing_date VARCHAR(64) NOT NULL DEFAULT '31 Aralık 2026';
+            ALTER TABLE markets ADD COLUMN IF NOT EXISTS source_url TEXT;
+            ALTER TABLE markets ADD COLUMN IF NOT EXISTS source_name VARCHAR(128);
+
+            ALTER TABLE positions ADD COLUMN IF NOT EXISTS total_invested NUMERIC(24,6) NOT NULL DEFAULT 0;
+            ALTER TABLE positions ADD COLUMN IF NOT EXISTS realized_pnl NUMERIC(24,6) NOT NULL DEFAULT 0;
+        `);
+
+        // 3. Demo Kullanıcıları ve Top 100 Kahin Başlangıç Verisi
         const checkUsers = await client.query(`SELECT count(*) FROM users`);
         if (parseInt(checkUsers.rows[0].count, 10) === 0) {
+            console.info('[DATABASE] Kullanıcı tohumları yükleniyor...');
             await client.query(`
                 INSERT INTO users (id, email, username, balance_kor, streak, quests_today) VALUES
                 ('11111111-1111-1111-1111-111111111111', 'demo@oyver.pro', 'LeisanB', 14500, 5, 1),
@@ -134,13 +155,14 @@ async function initDatabase() {
                 ('33333333-3333-3333-3333-333333333333', 'ece@oyver.pro', 'Ece_Analist', 315000, 8, 3),
                 ('44444444-4444-4444-4444-444444444444', 'quant@oyver.pro', 'QuantTraderTR', 280000, 6, 2),
                 ('55555555-5555-5555-5555-555555555555', 'zeki@oyver.pro', 'Zeki_Forecaster', 195000, 4, 1)
-                ON CONFLICT DO NOTHING;
+                ON CONFLICT (email) DO NOTHING;
             `);
         }
 
-        // Başlangıç Pazarları
+        // 4. Başlangıç Pazarları
         const checkMarket = await client.query(`SELECT id FROM markets LIMIT 1`);
         if (checkMarket.rows.length === 0) {
+            console.info('[DATABASE] Canlı pazarlar tohumlanıyor...');
             const initialMarkets = [
                 {
                     slug: 'asgari-ucret-2026',
@@ -201,6 +223,7 @@ async function initDatabase() {
                 await client.query(`INSERT INTO amm_state (market_id, yes_reserve, no_reserve) VALUES ($1, $2, $3)`, [mId, item.yesR, item.noR]);
             }
         }
+        console.info('[DATABASE] Sistem başarıyla hazırlandı.');
     } finally {
         client.release();
     }
@@ -421,7 +444,6 @@ app.post('/api/markets/create', async (req, rep) => {
 
     try {
         const result = await runInTransaction(async (c) => {
-            // 10.000 KOR Teminat Düşümü
             const stakeAmt = new Decimal(10000);
             const ur = await c.query(
                 `UPDATE users SET balance_kor = balance_kor - $1 WHERE id = $2 AND balance_kor >= $1 RETURNING balance_kor`,
@@ -436,7 +458,6 @@ app.post('/api/markets/create', async (req, rep) => {
             `, [slug, category, question, sourceName, sourceUrl || 'https://resmigazete.gov.tr', closingDate || '31 Aralık 2026']);
 
             const mId = mRes.rows[0].id;
-            // İlk AMM Havuzu: 5.000 Yes - 5.000 No (%50-%50 başlangıç)
             await c.query(`INSERT INTO amm_state (market_id, yes_reserve, no_reserve) VALUES ($1, 5000, 5000)`, [mId]);
             await c.query(`INSERT INTO ledger_entries (entry_type, reference_id) VALUES ('UGC_STAKE', $1)`, [mId]);
 
@@ -767,7 +788,7 @@ app.get('/', async (req, reply) => {
                             <div class="text-xl font-black text-white mt-1">500.000 KOR</div>
                             <div class="text-[11px] text-slate-400 mt-1">B2B Veri & VIP İtibar</div>
                         </div>
-                        <button onclick="buyKor(50000, 'Balina Paketi')" class="mt-4 w-full py-2 bg-slate-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold transition">Yükle</button>
+                        <button onclick="buyKor(500000, 'Balina Paketi')" class="mt-4 w-full py-2 bg-slate-700 hover:bg-emerald-600 text-white rounded-lg text-xs font-bold transition">Yükle</button>
                     </div>
                 </div>
             </div>
@@ -796,7 +817,6 @@ app.get('/', async (req, reply) => {
         let currentBalance = 14500;
         let activeCategory = 'ALL';
 
-        // TOAST BİLDİRİMİ
         function showToast(msg, type = 'success') {
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
@@ -814,7 +834,6 @@ app.get('/', async (req, reply) => {
             }, 3500);
         }
 
-        // WEBSOCKET
         function connectWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const ws = new WebSocket(protocol + '//' + window.location.host + '/ws');
@@ -933,7 +952,6 @@ app.get('/', async (req, reply) => {
             });
         }
 
-        // ÇEKMECE İŞLEMLERİ
         window.openDrawer = function(id, choice) {
             selectedMarket = markets.find(m => m.id === id);
             selectedChoice = choice;
@@ -982,7 +1000,6 @@ app.get('/', async (req, reply) => {
             document.getElementById('calculated-payout').textContent = '+' + payout.toLocaleString('tr-TR') + ' KOR';
         }
 
-        // HIZLI TUTAR BUTONLARI (+100, +500, +1000, MAKS)
         document.querySelectorAll('.quick-kor').forEach(btn => {
             btn.onclick = () => {
                 const val = btn.getAttribute('data-val');
@@ -996,7 +1013,6 @@ app.get('/', async (req, reply) => {
             };
         });
 
-        // TAHMİNİ DEFTERE İŞLE
         document.getElementById('btn-submit-prediction').onclick = async () => {
             const amt = document.getElementById('input-kor-amount').value;
             const btn = document.getElementById('btn-submit-prediction');
@@ -1031,7 +1047,6 @@ app.get('/', async (req, reply) => {
             }
         };
 
-        // UGC ANKET AÇMA
         const ugcModal = document.getElementById('ugc-modal');
         const openUgc = () => ugcModal.classList.remove('hidden');
         const closeUgc = () => ugcModal.classList.add('hidden');
@@ -1071,7 +1086,6 @@ app.get('/', async (req, reply) => {
             }
         };
 
-        // PRO MAĞAZA (PAYWALL)
         const shopModal = document.getElementById('shop-modal');
         const openShop = () => shopModal.classList.remove('hidden');
         const closeShop = () => shopModal.classList.add('hidden');
@@ -1099,7 +1113,6 @@ app.get('/', async (req, reply) => {
             }
         };
 
-        // LİDERLİK TABLOSU
         document.getElementById('btn-open-leaderboard').onclick = async () => {
             const d = await fetch('/api/leaderboard').then(r => r.json());
             const list = document.getElementById('leaderboard-list');
@@ -1120,7 +1133,6 @@ app.get('/', async (req, reply) => {
         };
         document.getElementById('btn-close-leaderboard').onclick = () => document.getElementById('leaderboard-modal').classList.add('hidden');
 
-        // KULLANICI DEĞİŞTİRME & SOSYAL PAYLAŞIM
         window.promptSwitchUser = async () => {
             const name = prompt('Giriş yapılacak kullanıcı adını girin (Örn: Ahmet_Kahin, Ece_Analist, LeisanB):');
             if (!name) return;
@@ -1149,7 +1161,6 @@ app.get('/', async (req, reply) => {
         document.getElementById('btn-share-whatsapp').onclick = () => selectedMarket && shareMkt(selectedMarket.id, 'wa');
         document.getElementById('btn-share-x').onclick = () => selectedMarket && shareMkt(selectedMarket.id, 'x');
 
-        // KATEGORİ FİLTRELERİ
         document.querySelectorAll('.cat-btn').forEach(btn => {
             btn.onclick = (e) => {
                 document.querySelectorAll('.cat-btn').forEach(b => b.className = 'cat-btn bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-1.5 rounded-lg text-xs font-bold transition');
