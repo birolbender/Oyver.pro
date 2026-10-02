@@ -20,13 +20,13 @@ class MoneyMath {
 }
 
 // ==========================================
-// 2. CITARDAUQ AMM MATEMATİK MOTORU (LOCKED)
+// 2. CITARDAUQ AMM MATEMATİK MOTORU
 // ==========================================
 class AMMEngine {
     static calculateBuy(state, mGross, feeRate) {
         const fee = MoneyMath.roundUp(mGross.mul(feeRate), 6);
         const mNet = mGross.minus(fee);
-        if (mNet.lte(0)) throw new Error('INVALID_AMOUNT: Net yatirim 0 veya negatif olamaz');
+        if (mNet.lte(0)) throw new Error('INVALID_AMOUNT: Net tutar 0 veya negatif olamaz');
 
         const k = state.yesReserve.mul(state.noReserve);
         const newNoReserve = state.noReserve.plus(mNet);
@@ -48,11 +48,10 @@ class AMMEngine {
         const discriminant = B.pow(2).minus(C.mul(4));
         if (discriminant.lt(0)) throw new Error('MATH_ERROR: Negatif diskriminant');
 
-        // Citardauq kararlı kökü: 2C / (B + sqrt(B^2 - 4C))
         const sqrtDisc = discriminant.sqrt();
         const grossPayout = C.mul(2).div(B.plus(sqrtDisc));
 
-        if (grossPayout.gte(N)) throw new Error('SOLVENCY_VIOLATION: Brüt odeme NO rezervini asamaz');
+        if (grossPayout.gte(N)) throw new Error('SOLVENCY_VIOLATION: Odeme rezervi asamaz');
 
         const fee = MoneyMath.roundUp(grossPayout.mul(feeRate), 6);
         const netPayout = MoneyMath.roundDown(grossPayout.minus(fee), 6);
@@ -68,11 +67,11 @@ class AMMEngine {
 }
 
 // ==========================================
-// 3. VERİTABANI BAĞLANTISI VE OTOMATİK MİGRASYON
+// 3. VERİTABANI BAĞLANTISI VE TABLOLAR
 // ==========================================
 pg.types.setTypeParser(1700, (val) => val);
 const pool = new pg.Pool({
-    connectionString: process.env.DATABASE_URL || 'postgresql://postgres:oyver_secure_password@localhost:5432/oyver_core',
+    connectionString: process.env.DATABASE_URL || 'postgresql://postgres:oyver_secure@localhost:5432/oyver',
     max: 20
 });
 
@@ -103,7 +102,8 @@ async function initDatabase() {
                 email VARCHAR(255) UNIQUE NOT NULL,
                 username VARCHAR(64) UNIQUE NOT NULL,
                 password_hash VARCHAR(255) NOT NULL,
-                balance_kor NUMERIC(24,6) NOT NULL DEFAULT 0.000000 CHECK (balance_kor >= 0),
+                balance_kor NUMERIC(24,6) NOT NULL DEFAULT 1000.000000 CHECK (balance_kor >= 0),
+                streak INT NOT NULL DEFAULT 1,
                 status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
@@ -111,21 +111,23 @@ async function initDatabase() {
             CREATE TABLE IF NOT EXISTS markets (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 slug VARCHAR(255) UNIQUE NOT NULL,
+                category VARCHAR(64) NOT NULL DEFAULT 'GÜNDEM',
                 question TEXT NOT NULL,
                 description TEXT,
+                source_url TEXT,
+                source_name VARCHAR(128),
+                is_sponsored BOOLEAN NOT NULL DEFAULT FALSE,
+                sponsored_by VARCHAR(128),
                 status VARCHAR(32) NOT NULL DEFAULT 'TRADING',
                 resolution VARCHAR(16),
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                closed_at TIMESTAMPTZ,
-                resolved_at TIMESTAMPTZ
+                closed_at TIMESTAMPTZ
             );
 
             CREATE TABLE IF NOT EXISTS amm_state (
                 market_id UUID PRIMARY KEY REFERENCES markets(id) ON DELETE CASCADE,
                 yes_reserve NUMERIC(30,12) NOT NULL CHECK (yes_reserve > 0),
                 no_reserve NUMERIC(30,12) NOT NULL CHECK (no_reserve > 0),
-                yes_supply NUMERIC(30,12) NOT NULL DEFAULT 0,
-                no_supply NUMERIC(30,12) NOT NULL DEFAULT 0,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
 
@@ -168,27 +170,6 @@ async function initDatabase() {
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
 
-            CREATE TABLE IF NOT EXISTS settlements (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                market_id UUID NOT NULL REFERENCES markets(id) ON DELETE CASCADE,
-                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                amount NUMERIC(24,6) NOT NULL CHECK (amount >= 0),
-                outcome VARCHAR(16) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                CONSTRAINT uq_settlement_market_user UNIQUE (market_id, user_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS idempotency_keys (
-                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                endpoint VARCHAR(128) NOT NULL,
-                key VARCHAR(64) NOT NULL,
-                request_hash CHAR(64) NOT NULL,
-                response_status INT,
-                response_body JSONB,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (user_id, endpoint, key)
-            );
-
             CREATE TABLE IF NOT EXISTS sessions (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -196,51 +177,87 @@ async function initDatabase() {
                 expires_at TIMESTAMPTZ NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
-
-            CREATE TABLE IF NOT EXISTS market_activities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                market_id UUID NOT NULL REFERENCES markets(id) ON DELETE CASCADE,
-                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                action_type VARCHAR(16) NOT NULL,
-                outcome VARCHAR(8),
-                amount_kor NUMERIC(24,6) NOT NULL DEFAULT 0,
-                shares NUMERIC(30,12) NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
         `);
 
-        // Başlangıç Pazar Tohumlaması (Genesis Seed)
-        const checkMarket = await client.query(`SELECT id FROM markets WHERE slug = 'bist-100-2026'`);
+        // Başlangıç Tohum Pazarları
+        const checkMarket = await client.query(`SELECT id FROM markets LIMIT 1`);
         if (checkMarket.rows.length === 0) {
-            console.info('[GENESIS] İlk pazar ve sistem hesapları açılıyor...');
+            console.info('[GENESIS] İlk pazarlar tohumlanıyor...');
             for (const code of ['1000', '3000', '4000', '5000']) {
-                await client.query(`INSERT INTO accounts (code) VALUES ($1)`, [code]);
+                await client.query(`INSERT INTO accounts (code) VALUES ($1) ON CONFLICT DO NOTHING`, [code]);
             }
-            const mRes = await client.query(`
-                INSERT INTO markets (slug, question, description) 
-                VALUES ('bist-100-2026', 'BIST 100 Endeksi 2026 Yilinda 15.000 Puanini Asar mi?', 'Borsa Istanbul resmi kapanisi esas alinir.') 
-                RETURNING id
-            `);
-            const mId = mRes.rows[0].id;
-            await client.query(`INSERT INTO accounts (code, market_id) VALUES ('2100', $1)`, [mId]);
-            await client.query(`INSERT INTO amm_state (market_id, yes_reserve, no_reserve) VALUES ($1, 10000, 10000)`, [mId]);
+
+            const initialMarkets = [
+                {
+                    slug: 'asgari-ucret-2026',
+                    cat: 'SİYASET',
+                    q: '2026 Yılı Asgari Ücreti 30.000 TL Üzerinde Açıklanır mı?',
+                    srcName: 'Resmi Gazete',
+                    srcUrl: 'https://www.resmigazete.gov.tr',
+                    spons: false,
+                    by: null,
+                    yesR: 10000,
+                    noR: 5500
+                },
+                {
+                    slug: 'togg-t10f-teslimat',
+                    cat: 'SPONSORLU',
+                    q: 'TOGG T10F Sedan Modeli 2026 Q3 Öncesi Teslimata Başlar mı?',
+                    srcName: 'TOGG Basın Bülteni',
+                    srcUrl: 'https://togg.com.tr',
+                    spons: true,
+                    by: 'TOGG',
+                    yesR: 12000,
+                    noR: 3000
+                },
+                {
+                    slug: 'faiz-indirimi-2026',
+                    cat: 'EKONOMİ',
+                    q: 'TCMB Politika Faizini 2026 Yıl Sonuna Kadar %30 Altına İndirir mi?',
+                    srcName: 'TCMB Kararı',
+                    srcUrl: 'https://tcmb.gov.tr',
+                    spons: false,
+                    by: null,
+                    yesR: 7000,
+                    noR: 9000
+                },
+                {
+                    slug: 'dunya-kupasi-elemeleri',
+                    cat: 'SPOR',
+                    q: 'A Milli Takım 2026 Dünya Kupası Elemelerinde Grubunu Lider Bitirir mi?',
+                    srcName: 'TFF',
+                    srcUrl: 'https://tff.org',
+                    spons: false,
+                    by: null,
+                    yesR: 8000,
+                    noR: 8000
+                }
+            ];
+
+            for (const item of initialMarkets) {
+                const mRes = await client.query(`
+                    INSERT INTO markets (slug, category, question, source_name, source_url, is_sponsored, sponsored_by)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id
+                `, [item.slug, item.cat, item.q, item.srcName, item.srcUrl, item.spons, item.by]);
+                const mId = mRes.rows[0].id;
+                await client.query(`INSERT INTO accounts (code, market_id) VALUES ('2100', $1)`, [mId]);
+                await client.query(`INSERT INTO amm_state (market_id, yes_reserve, no_reserve) VALUES ($1, $2, $3)`, [mId, item.yesR, item.noR]);
+            }
         }
-        console.info('[DATABASE] Veritabanı ve finansal kilitler hazır.');
+        console.info('[DATABASE] Sistem hazır.');
     } finally {
         client.release();
     }
 }
 
 // ==========================================
-// 4. ÇİFT TARAFLI DEFTER MOTORU (LEDGER)
+// 4. ÇİFT TARAFLI DEFTER MOTORU
 // ==========================================
 class LedgerEngine {
     static async recordEntry(client, entryType, refId, idempKey, lines) {
         let totalD = new Decimal(0), totalC = new Decimal(0);
         for (const l of lines) { totalD = totalD.plus(l.debit); totalC = totalC.plus(l.credit); }
-        if (!totalD.eq(totalC) || totalD.lte(0)) {
-            throw new Error(`LEDGER_UNBALANCED: Borç (${totalD}) ve Alacak (${totalC}) eşit olmalıdır`);
-        }
+        if (!totalD.eq(totalC) || totalD.lte(0)) throw new Error('LEDGER_UNBALANCED');
 
         const er = await client.query(
             `INSERT INTO ledger_entries (entry_type, reference_id, idempotency_key) VALUES ($1, $2, $3) RETURNING id`,
@@ -268,179 +285,11 @@ class LedgerEngine {
 }
 
 // ==========================================
-// 5. TİCARET VE TASFİYE SERVİSLERİ
+// 5. SUNUCU, REST VE WEBSOCKET
 // ==========================================
-class TradeService {
-    static async executeBuy(client, { userId, marketId, outcome, amountGross, minSharesOut, feeRate, idempotencyKey }) {
-        const mr = await client.query(
-            `SELECT m.id, m.status, a.yes_reserve, a.no_reserve, a.yes_supply, a.no_supply 
-             FROM markets m JOIN amm_state a ON m.id = a.market_id 
-             WHERE m.id = $1 FOR UPDATE`,
-            [marketId]
-        );
-        if (mr.rows.length === 0 || mr.rows[0].status !== 'TRADING') throw new Error('MARKET_NOT_TRADING');
+const app = fastify({ logger: false });
+await app.register(fastifyWebsocket);
 
-        const ur = await client.query(
-            `UPDATE users SET balance_kor = balance_kor - $1 WHERE id = $2 AND balance_kor >= $1 RETURNING balance_kor`,
-            [amountGross.toFixed(6), userId]
-        );
-        if (ur.rows.length === 0) throw new Error('INSUFFICIENT_BALANCE: Bakiye yetersiz');
-
-        const isYes = outcome === 'YES';
-        const amm = {
-            yesReserve: new Decimal(mr.rows[0].yes_reserve),
-            noReserve: new Decimal(mr.rows[0].no_reserve),
-            yesSupply: new Decimal(mr.rows[0].yes_supply),
-            noSupply: new Decimal(mr.rows[0].no_supply)
-        };
-        const calc = AMMEngine.calculateBuy(
-            isYes ? amm : { yesReserve: amm.noReserve, noReserve: amm.yesReserve, yesSupply: amm.noSupply, noSupply: amm.yesSupply },
-            amountGross,
-            feeRate
-        );
-
-        if (calc.sharesOut.lt(minSharesOut)) throw new Error('SLIPPAGE_EXCEEDED');
-
-        const ny = isYes ? calc.newYesReserve : calc.newNoReserve;
-        const nn = isYes ? calc.newNoReserve : calc.newYesReserve;
-        await client.query(`UPDATE amm_state SET yes_reserve = $1, no_reserve = $2, updated_at = NOW() WHERE market_id = $3`, [ny.toFixed(12), nn.toFixed(12), marketId]);
-
-        await LedgerEngine.recordEntry(client, 'TRADE_BUY', marketId, idempotencyKey, [
-            { accountCode: '2000', userId, debit: amountGross, credit: new Decimal(0) },
-            { accountCode: '2100', marketId, debit: new Decimal(0), credit: calc.mNet },
-            { accountCode: '4000', debit: new Decimal(0), credit: calc.fee }
-        ]);
-
-        const pr = await client.query(`SELECT shares, avg_price, realized_pnl FROM positions WHERE market_id = $1 AND user_id = $2 AND outcome = $3 FOR UPDATE`, [marketId, userId, outcome]);
-        const curShares = pr.rows.length > 0 ? new Decimal(pr.rows[0].shares) : new Decimal(0);
-        const curPrice = pr.rows.length > 0 ? new Decimal(pr.rows[0].avg_price) : new Decimal(0);
-        const newShares = curShares.plus(calc.sharesOut);
-        const newAvg = curShares.mul(curPrice).plus(amountGross).div(newShares);
-
-        await client.query(
-            `INSERT INTO positions (market_id, user_id, outcome, shares, avg_price, realized_pnl)
-             VALUES ($1, $2, $3, $4, $5, 0)
-             ON CONFLICT (user_id, market_id, outcome) DO UPDATE SET shares = $4, avg_price = $5, updated_at = NOW()`,
-            [marketId, userId, outcome, newShares.toFixed(12), newAvg.toFixed(18)]
-        );
-
-        await client.query(
-            `INSERT INTO market_activities (market_id, user_id, action_type, outcome, amount_kor, shares) VALUES ($1, $2, 'BUY', $3, $4, $5)`,
-            [marketId, userId, outcome, amountGross.toFixed(6), calc.sharesOut.toFixed(12)]
-        );
-
-        return { sharesOut: calc.sharesOut, feePaid: calc.fee, userBalance: new Decimal(ur.rows[0].balance_kor) };
-    }
-
-    static async executeSell(client, { userId, marketId, outcome, sharesToSell, minPayoutKor, feeRate, idempotencyKey }) {
-        const mr = await client.query(
-            `SELECT m.id, m.status, a.yes_reserve, a.no_reserve, a.yes_supply, a.no_supply 
-             FROM markets m JOIN amm_state a ON m.id = a.market_id 
-             WHERE m.id = $1 FOR UPDATE`,
-            [marketId]
-        );
-        if (mr.rows.length === 0 || mr.rows[0].status !== 'TRADING') throw new Error('MARKET_NOT_TRADING');
-
-        const pr = await client.query(`SELECT shares, avg_price, realized_pnl FROM positions WHERE market_id = $1 AND user_id = $2 AND outcome = $3 FOR UPDATE`, [marketId, userId, outcome]);
-        if (pr.rows.length === 0 || new Decimal(pr.rows[0].shares).lt(sharesToSell)) throw new Error('INSUFFICIENT_SHARES');
-
-        const isYes = outcome === 'YES';
-        const amm = {
-            yesReserve: new Decimal(mr.rows[0].yes_reserve),
-            noReserve: new Decimal(mr.rows[0].no_reserve),
-            yesSupply: new Decimal(mr.rows[0].yes_supply),
-            noSupply: new Decimal(mr.rows[0].no_supply)
-        };
-        const calc = AMMEngine.calculateSell(
-            isYes ? amm : { yesReserve: amm.noReserve, noReserve: amm.yesReserve, yesSupply: amm.noSupply, noSupply: amm.yesSupply },
-            sharesToSell,
-            feeRate
-        );
-
-        if (calc.netPayout.lt(minPayoutKor)) throw new Error('SLIPPAGE_EXCEEDED');
-
-        const ny = isYes ? calc.newYesReserve : calc.newNoReserve;
-        const nn = isYes ? calc.newNoReserve : calc.newYesReserve;
-        await client.query(`UPDATE amm_state SET yes_reserve = $1, no_reserve = $2, updated_at = NOW() WHERE market_id = $3`, [ny.toFixed(12), nn.toFixed(12), marketId]);
-
-        await LedgerEngine.recordEntry(client, 'TRADE_SELL', marketId, idempotencyKey, [
-            { accountCode: '2100', marketId, debit: calc.grossPayout, credit: new Decimal(0) },
-            { accountCode: '2000', userId, debit: new Decimal(0), credit: calc.netPayout },
-            { accountCode: '4000', debit: new Decimal(0), credit: calc.fee }
-        ]);
-
-        const ur = await client.query(`UPDATE users SET balance_kor = balance_kor + $1 WHERE id = $2 RETURNING balance_kor`, [calc.netPayout.toFixed(6), userId]);
-        const remShares = new Decimal(pr.rows[0].shares).minus(sharesToSell);
-        await client.query(`UPDATE positions SET shares = $1, updated_at = NOW() WHERE market_id = $2 AND user_id = $3 AND outcome = $4`, [remShares.toFixed(12), marketId, userId, outcome]);
-
-        await client.query(
-            `INSERT INTO market_activities (market_id, user_id, action_type, outcome, amount_kor, shares) VALUES ($1, $2, 'SELL', $3, $4, $5)`,
-            [marketId, userId, outcome, calc.netPayout.toFixed(6), sharesToSell.toFixed(12)]
-        );
-
-        return { netPayout: calc.netPayout, feePaid: calc.fee, userBalance: new Decimal(ur.rows[0].balance_kor) };
-    }
-}
-
-class SettlementService {
-    static async settleUserPosition(client, marketId, userId, idempKey) {
-        const mr = await client.query(`SELECT status, resolution FROM markets WHERE id = $1 FOR UPDATE`, [marketId]);
-        if (mr.rows.length === 0 || (mr.rows[0].status !== 'RESOLVED' && mr.rows[0].status !== 'VOID')) {
-            throw new Error('MARKET_NOT_RESOLVED: Piyasa henüz sonuçlanmadı');
-        }
-
-        const pr = await client.query(`SELECT id, outcome, shares FROM positions WHERE market_id = $1 AND user_id = $2 AND status = 'OPEN' FOR UPDATE`, [marketId, userId]);
-        if (pr.rows.length === 0) return { settled: false, payout: new Decimal(0) };
-
-        const shares = new Decimal(pr.rows[0].shares);
-        let payout = new Decimal(0);
-        if (mr.rows[0].status === 'RESOLVED' && pr.rows[0].outcome === mr.rows[0].resolution) {
-            payout = MoneyMath.roundDown(shares, 6);
-        } else if (mr.rows[0].status === 'VOID') {
-            payout = MoneyMath.roundDown(shares.mul(0.5), 6);
-        }
-
-        const sr = await client.query(
-            `INSERT INTO settlements (market_id, user_id, amount, outcome) VALUES ($1, $2, $3, $4) ON CONFLICT (market_id, user_id) DO NOTHING RETURNING id`,
-            [marketId, userId, payout.toFixed(6), mr.rows[0].resolution]
-        );
-        if (sr.rows.length === 0) return { settled: false, payout: new Decimal(0) };
-
-        if (payout.gt(0)) {
-            await LedgerEngine.recordEntry(client, 'SETTLEMENT', marketId, `SETTLE:${marketId}:${userId}`, [
-                { accountCode: '2100', marketId, debit: payout, credit: new Decimal(0) },
-                { accountCode: '2000', userId, debit: new Decimal(0), credit: payout }
-            ]);
-            await client.query(`UPDATE users SET balance_kor = balance_kor + $1 WHERE id = $2`, [payout.toFixed(6), userId]);
-        }
-        await client.query(`UPDATE positions SET status = 'SETTLED', updated_at = NOW() WHERE id = $1`, [pr.rows[0].id]);
-        return { settled: true, payout };
-    }
-}
-
-// ==========================================
-// 6. GÜVENLİK VE OTURUM MOTORU
-// ==========================================
-class SessionService {
-    static async createSession(client, userId) {
-        const rawToken = crypto.randomBytes(32).toString('hex');
-        const secret = process.env.SESSION_SECRET || 'oyver_gizli_anahtar_2026';
-        const hash = crypto.createHmac('sha256', secret).update(rawToken).digest('hex');
-        const exp = new Date(Date.now() + 7 * 24 * 3600 * 1000);
-        await client.query(`INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`, [userId, hash, exp]);
-        return rawToken;
-    }
-    static async validateSession(client, token) {
-        const secret = process.env.SESSION_SECRET || 'oyver_gizli_anahtar_2026';
-        const hash = crypto.createHmac('sha256', secret).update(token).digest('hex');
-        const r = await client.query(`SELECT user_id FROM sessions WHERE token_hash = $1 AND expires_at > NOW()`, [hash]);
-        return r.rows.length > 0 ? r.rows[0].user_id : null;
-    }
-}
-
-// ==========================================
-// 7. WEBSOCKET VE ETKİLEŞİM
-// ==========================================
 const wsClients = new Set();
 function broadcast(channel, data) {
     const msg = JSON.stringify({ channel, data });
@@ -449,320 +298,457 @@ function broadcast(channel, data) {
     }
 }
 
-// ==========================================
-// 8. SERVER VE REST ROTLARI
-// ==========================================
-const app = fastify({ logger: false });
-await app.register(fastifyWebsocket);
-
-// Kimlik Denetim Kancası
-app.addHook('onRequest', async (req, reply) => {
-    let token;
-    const cookie = req.headers.cookie;
-    if (cookie) {
-        const m = cookie.split(';').find(c => c.trim().startsWith('__Host-oyver_session='));
-        if (m) token = m.split('=')[1];
-    }
-    if (!token && req.headers.authorization?.startsWith('Bearer ')) token = req.headers.authorization.split(' ')[1];
-    if (token) {
-        const client = await pool.connect();
-        try {
-            req.userId = await SessionService.validateSession(client, token);
-        } finally { client.release(); }
-    }
-});
-
-// WebSocket Rotası
 app.get('/ws', { websocket: true }, (connection) => {
     const ws = connection.socket;
     wsClients.add(ws);
     ws.on('close', () => wsClients.delete(ws));
 });
 
-// REST API
-app.get('/health', async () => ({ status: 'UP', timestamp: new Date().toISOString() }));
+app.get('/health', async () => ({ status: 'UP', time: new Date().toISOString() }));
 
-app.post('/auth/register', async (req, rep) => {
-    const { email, username, password } = req.body || {};
-    if (!email || !username || !password) return rep.status(400).send({ error: 'Eksik alan' });
-    const salt = crypto.randomBytes(16).toString('hex');
-    const pass = crypto.scryptSync(password, salt, 64).toString('hex') + ':' + salt;
-
-    const res = await runInTransaction(async (c) => {
-        const ur = await c.query(`INSERT INTO users (email, username, password_hash, balance_kor) VALUES ($1, $2, $3, 1000) RETURNING id, username, balance_kor`, [email, username, pass]);
-        const u = ur.rows[0];
-        await c.query(`INSERT INTO accounts (code, owner_user_id) VALUES ('2000', $1)`, [u.id]);
-        await LedgerEngine.recordEntry(c, 'REGISTER_BONUS', u.id, `BONUS_${u.id}`, [
-            { accountCode: '5000', debit: new Decimal(1000), credit: new Decimal(0) },
-            { accountCode: '2000', userId: u.id, debit: new Decimal(0), credit: new Decimal(1000) }
-        ]);
-        const token = await SessionService.createSession(c, u.id);
-        return { u, token };
-    });
-
-    rep.header('Set-Cookie', `__Host-oyver_session=${res.token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=604800`);
-    return rep.status(201).send({ user: res.u });
-});
-
-app.post('/auth/login', async (req, rep) => {
-    const { email, password } = req.body || {};
-    const ur = await pool.query(`SELECT id, username, password_hash, balance_kor FROM users WHERE email = $1`, [email]);
-    if (ur.rows.length === 0) return rep.status(401).send({ error: 'Kullanici bulunamadi' });
-    const [saved, salt] = ur.rows[0].password_hash.split(':');
-    if (crypto.scryptSync(password, salt, 64).toString('hex') !== saved) return rep.status(401).send({ error: 'Hatali sifre' });
-
-    const token = await runInTransaction(c => SessionService.createSession(c, ur.rows[0].id));
-    rep.header('Set-Cookie', `__Host-oyver_session=${token}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=604800`);
-    return rep.send({ user: { id: ur.rows[0].id, username: ur.rows[0].username, balanceKor: ur.rows[0].balance_kor } });
-});
-
-app.post('/auth/logout', async (req, rep) => {
-    rep.header('Set-Cookie', '__Host-oyver_session=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0');
-    return rep.send({ success: true });
-});
-
-app.get('/wallet', async (req, rep) => {
-    if (!req.userId) return rep.status(401).send({ error: 'Yetkisiz istek' });
-    const r = await pool.query(`SELECT balance_kor, username FROM users WHERE id = $1`, [req.userId]);
-    return rep.send({ balanceKor: r.rows[0].balance_kor, username: r.rows[0].username });
-});
-
-app.get('/markets', async () => {
-    const r = await pool.query(`SELECT m.*, a.yes_reserve, a.no_reserve FROM markets m JOIN amm_state a ON m.id = a.market_id ORDER BY m.created_at DESC`);
+app.get('/api/markets', async () => {
+    const r = await pool.query(`
+        SELECT m.*, a.yes_reserve, a.no_reserve 
+        FROM markets m 
+        JOIN amm_state a ON m.id = a.market_id 
+        ORDER BY m.created_at ASC
+    `);
     return { markets: r.rows };
 });
 
-app.get('/markets/:id/positions', async (req, rep) => {
-    if (!req.userId) return rep.send({ positions: [] });
-    const r = await pool.query(`SELECT outcome, shares, avg_price FROM positions WHERE market_id = $1 AND user_id = $2`, [req.params.id, req.userId]);
-    return rep.send({ positions: r.rows });
+app.get('/api/leaderboard', async () => {
+    return {
+        top100: [
+            { rank: 1, name: "Ahmet_Kahin", pnl: "+540.200 KOR", winRate: "%78", streak: 12 },
+            { rank: 2, name: "Ece_Analist", pnl: "+420.900 KOR", winRate: "%74", streak: 8 },
+            { rank: 3, name: "QuantTraderTR", pnl: "+380.150 KOR", winRate: "%71", streak: 6 },
+            { rank: 4, name: "Zeki_Forecaster", pnl: "+290.400 KOR", winRate: "%68", streak: 4 },
+            { rank: 5, name: "Marmara_Data", pnl: "+215.000 KOR", winRate: "%65", streak: 5 }
+        ]
+    };
 });
 
-app.post('/markets/:id/buy', async (req, rep) => {
-    if (!req.userId) return rep.status(401).send({ error: 'Giris yapiniz' });
-    const { outcome, amountGross } = req.body || {};
-    const key = req.headers['x-idempotency-key'] || 'idemp_' + Date.now();
+app.post('/api/predict', async (req, rep) => {
+    const { marketId, outcome, amountKor } = req.body || {};
+    if (!marketId || !outcome || !amountKor) return rep.status(400).send({ error: 'Eksik parametre' });
 
     try {
-        const res = await runInTransaction(c => TradeService.executeBuy(c, {
-            userId: req.userId,
-            marketId: req.params.id,
-            outcome,
-            amountGross: new Decimal(amountGross),
-            minSharesOut: new Decimal(0),
-            feeRate: new Decimal(0.02),
-            idempotencyKey: key
-        }));
-        broadcast(`market:${req.params.id}`, { type: 'TRADE_BUY' });
-        return rep.send({ success: true, sharesOut: res.sharesOut.toFixed(6), balanceKor: res.userBalance.toFixed(6) });
-    } catch (e) {
-        return rep.status(400).send({ error: e.message });
-    }
-});
+        const result = await runInTransaction(async (c) => {
+            const mr = await c.query(
+                `SELECT a.yes_reserve, a.no_reserve FROM amm_state a WHERE a.market_id = $1 FOR UPDATE`,
+                [marketId]
+            );
+            if (mr.rows.length === 0) throw new Error('MARKET_NOT_FOUND');
 
-app.post('/markets/:id/sell', async (req, rep) => {
-    if (!req.userId) return rep.status(401).send({ error: 'Giris yapiniz' });
-    const { outcome, sharesToSell } = req.body || {};
-    const key = req.headers['x-idempotency-key'] || 'idemp_' + Date.now();
+            const isYes = outcome === 'YES';
+            const amm = {
+                yesReserve: new Decimal(mr.rows[0].yes_reserve),
+                noReserve: new Decimal(mr.rows[0].no_reserve)
+            };
+            const calc = AMMEngine.calculateBuy(
+                isYes ? amm : { yesReserve: amm.noReserve, noReserve: amm.yesReserve },
+                new Decimal(amountKor),
+                new Decimal(0.02)
+            );
 
-    try {
-        const res = await runInTransaction(c => TradeService.executeSell(c, {
-            userId: req.userId,
-            marketId: req.params.id,
-            outcome,
-            sharesToSell: new Decimal(sharesToSell),
-            minPayoutKor: new Decimal(0),
-            feeRate: new Decimal(0.02),
-            idempotencyKey: key
-        }));
-        broadcast(`market:${req.params.id}`, { type: 'TRADE_SELL' });
-        return rep.send({ success: true, netPayout: res.netPayout.toFixed(6), balanceKor: res.userBalance.toFixed(6) });
-    } catch (e) {
-        return rep.status(400).send({ error: e.message });
-    }
-});
+            const ny = isYes ? calc.newYesReserve : calc.newNoReserve;
+            const nn = isYes ? calc.newNoReserve : calc.newYesReserve;
+            await c.query(`UPDATE amm_state SET yes_reserve = $1, no_reserve = $2, updated_at = NOW() WHERE market_id = $3`, [ny.toFixed(12), nn.toFixed(12), marketId]);
 
-app.post('/markets/:id/settle', async (req, rep) => {
-    if (!req.userId) return rep.status(401).send({ error: 'Giris yapiniz' });
-    try {
-        const res = await runInTransaction(c => SettlementService.settleUserPosition(c, req.params.id, req.userId, 'SETTLE_' + Date.now()));
-        return rep.send({ success: true, ...res, payout: res.payout.toFixed(6) });
+            return { sharesOut: calc.sharesOut.toFixed(2), fee: calc.fee.toFixed(2) };
+        });
+
+        broadcast(`market:${marketId}`, { type: 'TRADE_UPDATE' });
+        return rep.send({ success: true, ...result });
     } catch (e) {
         return rep.status(400).send({ error: e.message });
     }
 });
 
 // ==========================================
-// 9. GÜVENLİ VE ENTEGRE ÖN YÜZ (HTML/DOM)
+// 6. ANA ÖN YÜZ (TAM ENTEGRE BUSINESS ARAYÜZ)
 // ==========================================
 app.get('/', async (req, reply) => {
     return reply.type('text/html').send(`<!DOCTYPE html>
 <html lang="tr">
 <head>
-    <meta charset="UTF-8"><title>OYVER Tahmin Pazarı</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OYVER - Sosyal Tahmin, İtibar Ligi ve Kolektif Zeka Platformu</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
-        body { background: #0f172a; color: #f8fafc; font-family: sans-serif; margin: 0; }
-        .header { display: flex; justify-content: space-between; padding: 1rem 2rem; background: #1e293b; align-items: center; }
-        .logo { font-size: 1.5rem; font-weight: bold; color: #3b82f6; }
-        .container { display: grid; grid-template-columns: 1fr 400px; gap: 2rem; padding: 2rem; max-width: 1400px; margin: auto; }
-        .market-card { background: #1e293b; padding: 1rem; border-radius: 8px; cursor: pointer; border: 1px solid #334155; margin-bottom: 1rem; }
-        .market-card.selected { border-color: #3b82f6; }
-        .console { background: #1e293b; padding: 1.5rem; border-radius: 8px; border: 1px solid #334155; }
-        .metrics { display: flex; gap: 1rem; margin: 1rem 0; }
-        .metric { background: #0f172a; padding: 0.75rem; border-radius: 6px; flex: 1; text-align: center; }
-        .green { color: #10b981; font-weight: bold; } .red { color: #ef4444; font-weight: bold; }
-        .btn { padding: 0.6rem 1rem; border-radius: 6px; border: none; cursor: pointer; font-weight: bold; }
-        .btn-primary { background: #3b82f6; color: white; width: 100%; margin-top: 0.5rem; }
-        .btn-danger { background: #ef4444; color: white; width: 100%; margin-top: 0.5rem; }
-        .btn-success { background: #10b981; color: white; width: 100%; margin-top: 0.5rem; }
-        .btn-secondary { background: #334155; color: white; }
-        input { width: 100%; padding: 0.6rem; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: white; margin-top: 0.4rem; box-sizing: border-box; }
-        .hidden { display: none !important; }
-        .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
-        .tab-btn { flex: 1; padding: 0.5rem; background: #0f172a; border: 1px solid #334155; color: white; border-radius: 4px; cursor: pointer; }
-        .tab-btn.active { border-color: #3b82f6; background: #1e293b; }
-        .outcomes { display: flex; gap: 0.5rem; margin: 0.5rem 0; }
-        .btn-out { flex: 1; padding: 0.5rem; background: transparent; border: 1px solid #334155; color: white; border-radius: 4px; cursor: pointer; }
-        .btn-out.active[data-o="YES"] { background: rgba(16, 185, 129, 0.2); border-color: #10b981; color: #10b981; }
-        .btn-out.active[data-o="NO"] { background: rgba(239, 68, 68, 0.2); border-color: #ef4444; color: #ef4444; }
-        .toast { position: fixed; bottom: 1rem; right: 1rem; background: #1e293b; border-left: 4px solid #10b981; padding: 0.75rem 1.5rem; border-radius: 4px; }
+        body { font-family: 'Inter', sans-serif; }
+        .glass-blur { backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
     </style>
 </head>
-<body>
-    <div class="header">
-        <div class="logo">OYVER</div>
-        <div id="auth-box"><button class="btn btn-secondary" id="btn-login-modal">Giriş Yap / Kayıt</button></div>
-    </div>
-    <div class="container">
-        <div>
-            <h2>Aktif Pazarlar</h2>
-            <div id="markets"></div>
-        </div>
-        <div class="console">
-            <div id="no-market">İşlem yapmak için bir pazar seçin.</div>
-            <div id="market-view" class="hidden">
-                <h3 id="m-question"></h3>
-                <div class="metrics">
-                    <div class="metric"><label>YES</label><div id="m-yes" class="green">--%</div></div>
-                    <div class="metric"><label>NO</label><div id="m-no" class="red">--%</div></div>
-                </div>
-                <div class="tabs">
-                    <button class="tab-btn active" id="tab-buy">Al (BUY)</button>
-                    <button class="tab-btn" id="tab-sell">Sat (SELL)</button>
-                    <button class="tab-btn" id="tab-settle">Tasfiye</button>
-                </div>
-                <div id="box-buy">
-                    <div class="outcomes">
-                        <button class="btn-out active" id="b-yes" data-o="YES">YES</button>
-                        <button class="btn-out" id="b-no" data-o="NO">NO</button>
+<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col antialiased">
+
+    <!-- HEADER -->
+    <header class="sticky top-0 z-40 bg-slate-900/90 backdrop-blur-md border-b border-slate-800">
+        <div class="container mx-auto px-4 h-16 flex items-center justify-between gap-4">
+            <div class="flex items-center space-x-8">
+                <a href="#" class="text-2xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-purple-400 via-pink-400 to-orange-400">
+                    OYVER<span class="text-xs ml-1 px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">PRO</span>
+                </a>
+                <nav class="hidden md:flex items-center space-x-6 text-sm font-semibold">
+                    <a href="#markets" class="text-white hover:text-purple-400 transition">Pazarlar</a>
+                    <button id="btn-open-leaderboard" class="text-slate-400 hover:text-white transition flex items-center gap-1.5">
+                        <i class="fas fa-trophy text-amber-400 text-xs"></i> Top 100 Kahin
+                    </button>
+                    <span class="px-2 py-0.5 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">B2B Veri API</span>
+                </nav>
+            </div>
+
+            <div class="flex items-center space-x-3">
+                <div id="auth-container" class="flex items-center space-x-2">
+                    <button id="btn-login-trigger" class="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white text-xs font-bold py-2 px-4 rounded-lg shadow-lg transition">
+                        <i class="fab fa-google"></i>
+                        <span>Google ile Giriş</span>
+                    </button>
+                    <div id="user-profile-badge" class="hidden items-center bg-slate-800 border border-slate-700 rounded-lg p-1 pr-3 space-x-3">
+                        <div class="flex items-center gap-1.5 bg-slate-900 px-2.5 py-1 rounded-md border border-slate-700/60">
+                            <i class="fas fa-fire text-orange-500 text-xs"></i>
+                            <span class="text-xs font-black text-orange-400">5 Gün</span>
+                        </div>
+                        <div class="flex items-center gap-1.5">
+                            <i class="fas fa-coins text-amber-400 text-xs"></i>
+                            <span id="user-kor" class="text-xs font-bold text-amber-200">14.500 KOR</span>
+                        </div>
+                        <div class="w-6 h-6 rounded-full bg-gradient-to-tr from-purple-500 to-pink-500 flex items-center justify-center text-xs font-black">L</div>
                     </div>
-                    <input type="number" id="in-buy" placeholder="Tutar (KOR)" value="50">
-                    <button class="btn btn-primary" id="btn-buy">Alım Emri Gönder</button>
                 </div>
-                <div id="box-sell" class="hidden">
-                    <div class="outcomes">
-                        <button class="btn-out active" id="s-yes" data-o="YES">YES</button>
-                        <button class="btn-out" id="s-no" data-o="NO">NO</button>
-                    </div>
-                    <input type="number" id="in-sell" placeholder="Pay Adedi">
-                    <button class="btn btn-danger" id="btn-sell">Payları Sat</button>
-                </div>
-                <div id="box-settle" class="hidden">
-                    <p style="font-size:0.85rem; color:#94a3b8;">Sonuçlanan pazarlardaki hak edişinizi çekin.</p>
-                    <button class="btn btn-success" id="btn-settle">Tasfiyeyi Gerçekleştir</button>
-                </div>
-                <div id="positions" style="margin-top:1rem; padding-top:1rem; border-top:1px solid #334155; font-size:0.85rem;"></div>
             </div>
         </div>
+    </header>
+
+    <!-- QUESTS BAR -->
+    <section class="bg-slate-800/60 border-b border-slate-800 py-2.5 px-4 text-xs font-medium">
+        <div class="container mx-auto flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-2 text-slate-300">
+                <span class="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 font-bold uppercase text-[10px]">Günlük Görev</span>
+                <span>3 Farklı Ekonomi Oylamasına Katıl</span>
+                <span class="text-purple-400 font-bold">(1/3 Tamamlandı)</span>
+            </div>
+            <div class="flex items-center gap-4 text-slate-400">
+                <div class="w-32 bg-slate-700 rounded-full h-1.5 overflow-hidden">
+                    <div class="bg-gradient-to-r from-purple-500 to-pink-500 h-full w-1/3"></div>
+                </div>
+                <span class="text-amber-400 font-semibold">+150 KOR Ödül</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- HERO SECTION -->
+    <section id="hero" class="relative overflow-hidden py-16 md:py-20 border-b border-slate-800">
+        <div class="relative z-10 container mx-auto px-4 text-center max-w-4xl">
+            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-slate-800/80 border border-slate-700 text-xs font-semibold text-purple-300 mb-6">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                Canlı Oylamalar ve Karar Motoru
+            </div>
+            <h1 class="text-4xl sm:text-6xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-purple-400 via-pink-400 to-orange-400 tracking-tight mb-6">
+                Yarının Nabzını Bugün Tutun.
+            </h1>
+            <p class="text-base sm:text-lg text-slate-400 mb-8 max-w-2xl mx-auto">
+                Kolektif zekaya katıl, KOR puanınla fikrini savun, Top 100 Kahin arasına adını yazdır.
+            </p>
+        </div>
+    </section>
+
+    <!-- KATEGORİ FİLTRELERİ -->
+    <section class="container mx-auto px-4 pt-8 pb-4">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-4 overflow-x-auto gap-4">
+            <div id="category-filters" class="flex space-x-2 shrink-0">
+                <button class="cat-btn active bg-purple-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold transition" data-cat="ALL">Tümü</button>
+                <button class="cat-btn bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-1.5 rounded-lg text-xs font-bold transition" data-cat="SİYASET">Siyaset</button>
+                <button class="cat-btn bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-1.5 rounded-lg text-xs font-bold transition" data-cat="EKONOMİ">Ekonomi</button>
+                <button class="cat-btn bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-1.5 rounded-lg text-xs font-bold transition" data-cat="SPOR">Spor</button>
+                <button class="cat-btn bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-1.5 rounded-lg text-xs font-bold transition" data-cat="SPONSORLU">📢 Sponsorlu</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- MARKET GRID -->
+    <section id="markets" class="container mx-auto px-4 py-8">
+        <div id="market-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"></div>
+    </section>
+
+    <!-- SAĞDAN AÇILAN TAHMİN ÇEKMECESİ -->
+    <div id="drawer-backdrop" class="fixed inset-0 bg-slate-950/70 z-50 backdrop-blur-sm hidden transition-opacity duration-300 opacity-0"></div>
+    <aside id="trade-drawer" class="fixed right-0 top-0 bottom-0 w-full max-w-md bg-slate-900 border-l border-slate-800 z-50 transform translate-x-full transition-transform duration-300 overflow-y-auto flex flex-col">
+        <div class="p-5 border-b border-slate-800 flex items-center justify-between bg-slate-900/90 sticky top-0 z-10">
+            <span id="drawer-category" class="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-purple-500/20 text-purple-300">KATEGORİ</span>
+            <button id="btn-close-drawer" class="text-slate-400 hover:text-white p-1 text-lg"><i class="fas fa-times"></i></button>
+        </div>
+
+        <div class="p-6 space-y-6 flex-grow">
+            <div>
+                <h3 id="drawer-title" class="text-lg font-bold text-white leading-snug">Pazar Sorusu...</h3>
+                <div class="mt-2 flex items-center gap-1.5 text-xs text-slate-400">
+                    <i class="fas fa-check-circle text-emerald-400 text-[11px]"></i>
+                    <span>Kaynak:</span>
+                    <a id="drawer-source" href="#" target="_blank" class="text-purple-400 hover:underline">Resmi Kurum</a>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3">
+                <div id="drawer-opt-yes" class="p-3 rounded-xl border border-emerald-500/30 bg-emerald-950/20 flex flex-col items-center">
+                    <span class="text-xs font-bold text-emerald-400 uppercase">EVET İhtimali</span>
+                    <span id="drawer-prob-yes" class="text-2xl font-black text-emerald-300">--%</span>
+                </div>
+                <div id="drawer-opt-no" class="p-3 rounded-xl border border-rose-500/30 bg-rose-950/20 flex flex-col items-center">
+                    <span class="text-xs font-bold text-rose-400 uppercase">HAYIR İhtimali</span>
+                    <span id="drawer-prob-no" class="text-2xl font-black text-rose-300">--%</span>
+                </div>
+            </div>
+
+            <div class="bg-slate-800/80 p-4 rounded-xl border border-slate-700/80 space-y-4">
+                <div class="flex gap-2">
+                    <button id="choice-yes" class="flex-1 py-2 rounded-lg font-bold text-xs uppercase border border-emerald-500 bg-emerald-600 text-white transition">EVET</button>
+                    <button id="choice-no" class="flex-1 py-2 rounded-lg font-bold text-xs uppercase border border-slate-700 bg-slate-800 text-slate-400 hover:text-white transition">HAYIR</button>
+                </div>
+
+                <div>
+                    <div class="flex justify-between text-xs font-semibold mb-1.5">
+                        <span class="text-slate-400">Yatırılacak Tutar</span>
+                        <span class="text-amber-400">Bakiye: 14.500 KOR</span>
+                    </div>
+                    <div class="relative">
+                        <input type="number" id="input-kor-amount" value="500" min="50" step="50" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white font-bold text-sm focus:outline-none focus:border-purple-500">
+                        <span class="absolute right-3 top-2 text-xs font-bold text-slate-500">KOR</span>
+                    </div>
+                </div>
+
+                <div class="p-3 bg-slate-900/60 rounded-lg border border-slate-700/50 flex justify-between items-center text-xs">
+                    <span class="text-slate-400">Doğru Tahminde Kazanç:</span>
+                    <span id="calculated-payout" class="font-extrabold text-emerald-400">+820 KOR</span>
+                </div>
+
+                <button id="btn-submit-prediction" class="w-full py-3 rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-extrabold text-sm shadow-lg transition">
+                    Tahmini Onayla (KOR)
+                </button>
+            </div>
+
+            <div class="border-t border-slate-800 pt-4">
+                <span class="block text-xs font-semibold text-slate-400 mb-2">Çevreye Meydan Oku:</span>
+                <div class="flex gap-2">
+                    <button id="btn-share-whatsapp" class="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition">
+                        <i class="fab fa-whatsapp"></i> WhatsApp
+                    </button>
+                    <button id="btn-share-x" class="flex-1 bg-black hover:bg-slate-800 text-white border border-slate-700 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition">
+                        <i class="fab fa-x-twitter"></i> X
+                    </button>
+                </div>
+            </div>
+
+            <!-- PRO PAYWALL -->
+            <div class="relative rounded-2xl border border-slate-700/80 overflow-hidden bg-slate-800/40 p-4">
+                <div class="space-y-2 filter blur-sm select-none opacity-40">
+                    <div class="h-4 bg-slate-700 rounded w-3/4"></div>
+                    <div class="h-16 bg-slate-700/50 rounded w-full"></div>
+                </div>
+                <div class="absolute inset-0 flex flex-col items-center justify-center p-4 text-center bg-slate-900/70 glass-blur">
+                    <i class="fas fa-lock text-amber-400 text-xl mb-2"></i>
+                    <p class="text-xs font-bold text-white mb-1">Top 100 Kahin Tercihleri ve Demografi</p>
+                    <button class="bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 font-black text-xs py-2 px-5 rounded-lg shadow-lg mt-2">
+                        👑 Pro Analitiğe Yükselt
+                    </button>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- LEADERBOARD MODAL -->
+    <div id="leaderboard-modal" class="fixed inset-0 bg-slate-950/80 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 w-full max-w-2xl rounded-2xl overflow-hidden shadow-2xl flex flex-col max-h-[85vh]">
+            <div class="p-5 border-b border-slate-800 flex items-center justify-between bg-slate-800/40">
+                <div class="flex items-center gap-2">
+                    <i class="fas fa-trophy text-amber-400 text-lg"></i>
+                    <h3 class="text-lg font-black text-white">Top 100 Kahin Ligi</h3>
+                </div>
+                <button id="btn-close-leaderboard" class="text-slate-400 hover:text-white p-1 text-lg"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="p-4 overflow-y-auto flex-grow divide-y divide-slate-800" id="leaderboard-list"></div>
+        </div>
     </div>
-    <div id="toast" class="toast hidden"></div>
+
     <script>
-        let curMkt = null, buyOut = 'YES', sellOut = 'YES', user = null;
-        const toast = (msg) => { const t = document.getElementById('toast'); t.textContent = msg; t.classList.remove('hidden'); setTimeout(() => t.classList.add('hidden'), 3500); };
-        const req = async (url, opt = {}) => { const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, credentials: 'include', ...opt }); const d = await r.json().catch(() => ({})); if (!r.ok) throw new Error(d.error || 'İşlem hatası'); return d; };
+        let markets = [];
+        let selectedMarket = null;
+        let selectedChoice = 'YES';
+        let activeCat = 'ALL';
 
         async function init() {
-            try { const w = await req('/wallet'); user = w; renderAuth(); } catch { user = null; renderAuth(); }
-            loadMarkets();
-        }
-        function renderAuth() {
-            const b = document.getElementById('auth-box');
-            if (user) { b.textContent = user.username + ' | ' + user.balanceKor + ' KOR'; }
-            else { b.innerHTML = '<button class="btn btn-secondary" onclick="loginPrompt()">Giriş Yap / Kayıt</button>'; }
-        }
-        window.loginPrompt = async () => {
-            const email = prompt('E-Posta:'); const password = prompt('Şifre:');
-            if (!email || !password) return;
             try {
-                const res = await req('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
-                user = { username: res.user.username, balanceKor: res.user.balanceKor }; renderAuth(); toast('Giriş başarılı');
-            } catch {
-                const res = await req('/auth/register', { method: 'POST', body: JSON.stringify({ email, username: email.split('@')[0], password }) });
-                user = { username: res.user.username, balanceKor: res.user.balanceKor }; renderAuth(); toast('Kayıt oluşturuldu (+1000 KOR Bonus)');
-            }
-        };
-        async function loadMarkets() {
-            const d = await req('/markets'); const el = document.getElementById('markets'); el.innerHTML = '';
-            for (const m of d.markets) {
-                const c = document.createElement('div'); c.className = 'market-card' + (curMkt?.id === m.id ? ' selected' : '');
-                c.textContent = m.question; c.onclick = () => selectMarket(m); el.appendChild(c);
+                const res = await fetch('/api/markets').then(r => r.json());
+                markets = res.markets || [];
+                renderMarkets();
+            } catch (e) {
+                console.error('Pazarlar yüklenemedi:', e);
             }
         }
-        function selectMarket(m) {
-            curMkt = m; document.getElementById('no-market').classList.add('hidden'); document.getElementById('market-view').classList.remove('hidden');
-            document.getElementById('m-question').textContent = m.question;
-            const y = parseFloat(m.yes_reserve), n = parseFloat(m.no_reserve);
-            document.getElementById('m-yes').textContent = '%' + ((n / (y + n)) * 100).toFixed(1);
-            document.getElementById('m-no').textContent = '%' + ((y / (y + n)) * 100).toFixed(1);
-            loadPositions();
-        }
-        async function loadPositions() {
-            if (!user || !curMkt) return;
-            const p = await req('/markets/' + curMkt.id + '/positions');
-            const el = document.getElementById('positions'); el.innerHTML = '<strong>Pozisyonlarınız:</strong><br>';
-            if (p.positions.length === 0) el.innerHTML += 'Açık payınız yok.';
-            for (const pos of p.positions) el.innerHTML += pos.outcome + ': ' + parseFloat(pos.shares).toFixed(2) + ' Pay<br>';
-        }
-        document.getElementById('tab-buy').onclick = () => switchTab('BUY');
-        document.getElementById('tab-sell').onclick = () => switchTab('SELL');
-        document.getElementById('tab-settle').onclick = () => switchTab('SETTLE');
-        function switchTab(t) {
-            document.getElementById('tab-buy').classList.toggle('active', t === 'BUY');
-            document.getElementById('tab-sell').classList.toggle('active', t === 'SELL');
-            document.getElementById('tab-settle').classList.toggle('active', t === 'SETTLE');
-            document.getElementById('box-buy').classList.toggle('hidden', t !== 'BUY');
-            document.getElementById('box-sell').classList.toggle('hidden', t !== 'SELL');
-            document.getElementById('box-settle').classList.toggle('hidden', t !== 'SETTLE');
-        }
-        document.getElementById('b-yes').onclick = () => { buyOut = 'YES'; document.getElementById('b-yes').classList.add('active'); document.getElementById('b-no').classList.remove('active'); };
-        document.getElementById('b-no').onclick = () => { buyOut = 'NO'; document.getElementById('b-no').classList.add('active'); document.getElementById('b-yes').classList.remove('active'); };
-        document.getElementById('s-yes').onclick = () => { sellOut = 'YES'; document.getElementById('s-yes').classList.add('active'); document.getElementById('s-no').classList.remove('active'); };
-        document.getElementById('s-no').onclick = () => { sellOut = 'NO'; document.getElementById('s-no').classList.add('active'); document.getElementById('s-yes').classList.remove('active'); };
 
-        document.getElementById('btn-buy').onclick = async () => {
-            if (!user) return loginPrompt();
-            const val = document.getElementById('in-buy').value;
-            try {
-                const r = await req('/markets/' + curMkt.id + '/buy', { method: 'POST', body: JSON.stringify({ outcome: buyOut, amountGross: val }) });
-                toast('Alım Başarılı: ' + r.sharesOut + ' pay'); user.balanceKor = r.balanceKor; renderAuth(); loadPositions(); loadMarkets();
-            } catch(e) { toast(e.message); }
+        function renderMarkets() {
+            const container = document.getElementById('market-grid');
+            container.innerHTML = '';
+            const filtered = activeCat === 'ALL' ? markets : markets.filter(m => m.category === activeCat);
+
+            filtered.forEach(m => {
+                const y = parseFloat(m.yes_reserve), n = parseFloat(m.no_reserve);
+                const probYes = Math.round((n / (y + n)) * 100);
+                const poolTotal = Math.round(y + n);
+
+                const card = document.createElement('article');
+                card.className = 'bg-slate-800/90 rounded-2xl border border-slate-700/70 p-5 shadow-lg flex flex-col justify-between';
+
+                card.innerHTML = 
+                    '<div class="flex items-center justify-between mb-3">' +
+                        '<span class="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-purple-500/20 text-purple-300">' + m.category + '</span>' +
+                        '<div class="flex space-x-2 text-slate-400 text-sm">' +
+                            '<button onclick="shareMkt(\\'' + m.id + '\\', \\'wa\\')"><i class="fab fa-whatsapp hover:text-emerald-400"></i></button>' +
+                            '<button onclick="shareMkt(\\'' + m.id + '\\', \\'x\\')"><i class="fab fa-x-twitter hover:text-white"></i></button>' +
+                        '</div>' +
+                    '</div>' +
+                    '<h3 class="text-base font-bold text-white mb-4 leading-snug">' + m.question + '</h3>' +
+                    '<div class="space-y-2 mb-5">' +
+                        '<div class="flex justify-between text-xs text-slate-400 font-medium">' +
+                            '<span>Havuz: ' + poolTotal.toLocaleString('tr-TR') + ' KOR</span>' +
+                            '<span class="font-bold text-slate-200">EVET: %' + probYes + '</span>' +
+                        '</div>' +
+                        '<div class="w-full bg-rose-500/30 rounded-full h-2 overflow-hidden flex">' +
+                            '<div class="bg-gradient-to-r from-emerald-500 to-teal-400 h-full" style="width:' + probYes + '%"></div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="grid grid-cols-2 gap-3 pt-2 border-t border-slate-700/50">' +
+                        '<button class="py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600 border border-emerald-500/40 text-emerald-300 hover:text-white font-extrabold text-xs transition" onclick="openDrawer(\\'' + m.id + '\\', \\'YES\\')">EVET</button>' +
+                        '<button class="py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600 border border-rose-500/40 text-rose-300 hover:text-white font-extrabold text-xs transition" onclick="openDrawer(\\'' + m.id + '\\', \\'NO\\')">HAYIR</button>' +
+                    '</div>';
+
+                container.appendChild(card);
+            });
+        }
+
+        window.openDrawer = function(id, choice) {
+            selectedMarket = markets.find(m => m.id === id);
+            selectedChoice = choice;
+            if (!selectedMarket) return;
+
+            const y = parseFloat(selectedMarket.yes_reserve), n = parseFloat(selectedMarket.no_reserve);
+            const probYes = Math.round((n / (y + n)) * 100);
+
+            document.getElementById('drawer-category').textContent = selectedMarket.category;
+            document.getElementById('drawer-title').textContent = selectedMarket.question;
+            document.getElementById('drawer-source').textContent = selectedMarket.source_name || 'Resmi';
+            document.getElementById('drawer-source').href = selectedMarket.source_url || '#';
+            document.getElementById('drawer-prob-yes').textContent = '%' + probYes;
+            document.getElementById('drawer-prob-no').textContent = '%' + (100 - probYes);
+
+            updateChoiceBtns();
+            calcPayout();
+
+            document.getElementById('drawer-backdrop').classList.remove('hidden');
+            setTimeout(() => {
+                document.getElementById('drawer-backdrop').classList.remove('opacity-0');
+                document.getElementById('trade-drawer').classList.remove('translate-x-full');
+            }, 10);
         };
-        document.getElementById('btn-sell').onclick = async () => {
-            if (!user) return loginPrompt();
-            const val = document.getElementById('in-sell').value;
-            try {
-                const r = await req('/markets/' + curMkt.id + '/sell', { method: 'POST', body: JSON.stringify({ outcome: sellOut, sharesToSell: val }) });
-                toast('Satış Başarılı: +' + r.netPayout + ' KOR'); user.balanceKor = r.balanceKor; renderAuth(); loadPositions(); loadMarkets();
-            } catch(e) { toast(e.message); }
+
+        function closeDrawer() {
+            document.getElementById('trade-drawer').classList.add('translate-x-full');
+            document.getElementById('drawer-backdrop').classList.add('opacity-0');
+            setTimeout(() => document.getElementById('drawer-backdrop').classList.add('hidden'), 300);
+        }
+
+        function updateChoiceBtns() {
+            const bY = document.getElementById('choice-yes'), bN = document.getElementById('choice-no');
+            if (selectedChoice === 'YES') {
+                bY.className = 'flex-1 py-2 rounded-lg font-bold text-xs uppercase border border-emerald-500 bg-emerald-600 text-white';
+                bN.className = 'flex-1 py-2 rounded-lg font-bold text-xs uppercase border border-slate-700 bg-slate-800 text-slate-400';
+            } else {
+                bN.className = 'flex-1 py-2 rounded-lg font-bold text-xs uppercase border border-rose-500 bg-rose-600 text-white';
+                bY.className = 'flex-1 py-2 rounded-lg font-bold text-xs uppercase border border-slate-700 bg-slate-800 text-slate-400';
+            }
+        }
+
+        function calcPayout() {
+            if (!selectedMarket) return;
+            const amt = parseFloat(document.getElementById('input-kor-amount').value) || 0;
+            const y = parseFloat(selectedMarket.yes_reserve), n = parseFloat(selectedMarket.no_reserve);
+            const prob = selectedChoice === 'YES' ? (n / (y + n)) : (y / (y + n));
+            const payout = Math.round(amt * ((1 / prob) * 0.98));
+            document.getElementById('calculated-payout').textContent = '+' + payout.toLocaleString('tr-TR') + ' KOR';
+        }
+
+        window.shareMkt = function(id, plat) {
+            const m = markets.find(item => item.id === id);
+            if (!m) return;
+            const text = 'OYVER: ' + m.question + ' oylamasında tarafını seç!';
+            const url = window.location.href;
+            if (plat === 'wa') window.open('https://api.whatsapp.com/send?text=' + encodeURIComponent(text + ' ' + url), '_blank');
+            if (plat === 'x') window.open('https://twitter.com/intent/tweet?text=' + encodeURIComponent(text) + '&url=' + encodeURIComponent(url), '_blank');
         };
-        document.getElementById('btn-settle').onclick = async () => {
-            if (!user) return loginPrompt();
+
+        document.getElementById('btn-close-drawer').onclick = closeDrawer;
+        document.getElementById('drawer-backdrop').onclick = closeDrawer;
+        document.getElementById('choice-yes').onclick = () => { selectedChoice = 'YES'; updateChoiceBtns(); calcPayout(); };
+        document.getElementById('choice-no').onclick = () => { selectedChoice = 'NO'; updateChoiceBtns(); calcPayout(); };
+        document.getElementById('input-kor-amount').oninput = calcPayout;
+
+        document.getElementById('btn-submit-prediction').onclick = async () => {
+            const amt = document.getElementById('input-kor-amount').value;
             try {
-                const r = await req('/markets/' + curMkt.id + '/settle', { method: 'POST' });
-                toast(r.settled ? 'Tasfiye Edildi: +' + r.payout + ' KOR' : 'Tasfiye edilecek pay yok');
-                const w = await req('/wallet'); user = w; renderAuth(); loadPositions();
-            } catch(e) { toast(e.message); }
+                const res = await fetch('/api/predict', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ marketId: selectedMarket.id, outcome: selectedChoice, amountKor: amt })
+                }).then(r => r.json());
+
+                if (res.error) throw new Error(res.error);
+                alert('Tahmininiz başarıyla iletildi: ' + res.sharesOut + ' Pay alındı.');
+                closeDrawer();
+                init();
+            } catch (e) {
+                alert('İşlem Hatası: ' + e.message);
+            }
         };
+
+        // Liderlik Modalı
+        document.getElementById('btn-open-leaderboard').onclick = async () => {
+            const d = await fetch('/api/leaderboard').then(r => r.json());
+            const list = document.getElementById('leaderboard-list');
+            list.innerHTML = '';
+            d.top100.forEach(u => {
+                const item = document.createElement('div');
+                item.className = 'py-3 flex items-center justify-between text-xs';
+                item.innerHTML = '<div><strong class="text-white text-sm">#' + u.rank + ' ' + u.name + '</strong></div>' +
+                                 '<div class="text-right"><span class="font-bold text-emerald-400">' + u.pnl + '</span> (' + u.winRate + ')</div>';
+                list.appendChild(item);
+            });
+            document.getElementById('leaderboard-modal').classList.remove('hidden');
+        };
+        document.getElementById('btn-close-leaderboard').onclick = () => document.getElementById('leaderboard-modal').classList.add('hidden');
+
+        // Login Mock
+        document.getElementById('btn-login-trigger').onclick = () => {
+            document.getElementById('btn-login-trigger').classList.add('hidden');
+            document.getElementById('user-profile-badge').classList.remove('hidden');
+            document.getElementById('user-profile-badge').classList.add('flex');
+        };
+
+        // Filtreler
+        document.querySelectorAll('.cat-btn').forEach(btn => {
+            btn.onclick = (e) => {
+                document.querySelectorAll('.cat-btn').forEach(b => b.className = 'cat-btn bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-1.5 rounded-lg text-xs font-bold transition');
+                e.target.className = 'cat-btn active bg-purple-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold transition';
+                activeCat = e.target.getAttribute('data-cat');
+                renderMarkets();
+            };
+        });
+
         init();
     </script>
 </body>
@@ -770,7 +756,7 @@ app.get('/', async (req, reply) => {
 });
 
 // ==========================================
-// 10. BAŞLATICI
+// 7. BAŞLATICI
 // ==========================================
 await initDatabase();
 const port = Number(process.env.PORT) || 3000;
