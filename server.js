@@ -64,7 +64,6 @@ async function initDatabase() {
     try {
         console.info('[DATABASE] Şema ve tablolar doğrulanıyor...');
         
-        // 1. Tabloları oluştur
         await client.query(`
             CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
@@ -72,6 +71,7 @@ async function initDatabase() {
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 email VARCHAR(255) UNIQUE NOT NULL,
                 username VARCHAR(64) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) DEFAULT 'OAUTH_MOCK',
                 balance_kor NUMERIC(24,6) NOT NULL DEFAULT 14500.000000 CHECK (balance_kor >= 0),
                 streak INT NOT NULL DEFAULT 5,
                 quests_today INT NOT NULL DEFAULT 0,
@@ -126,9 +126,22 @@ async function initDatabase() {
             );
         `);
 
-        // 2. OTOMATİK MİGRASYON: Eski veritabanı tablolarındaki eksik sütunları ekle
+        // OTOMATİK MİGRASYON: password_hash kısıtını kaldır ve eksik sütunları ekle
         console.info('[DATABASE] Sütun migrasyonları uygulanıyor...');
         await client.query(`
+            DO $$ 
+            BEGIN 
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name='users' AND column_name='password_hash'
+                ) THEN 
+                    ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+                    ALTER TABLE users ALTER COLUMN password_hash SET DEFAULT 'OAUTH_MOCK';
+                ELSE
+                    ALTER TABLE users ADD COLUMN password_hash VARCHAR(255) DEFAULT 'OAUTH_MOCK';
+                END IF;
+            END $$;
+
             ALTER TABLE users ADD COLUMN IF NOT EXISTS balance_kor NUMERIC(24,6) NOT NULL DEFAULT 14500.000000;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS streak INT NOT NULL DEFAULT 5;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS quests_today INT NOT NULL DEFAULT 0;
@@ -144,22 +157,22 @@ async function initDatabase() {
             ALTER TABLE positions ADD COLUMN IF NOT EXISTS realized_pnl NUMERIC(24,6) NOT NULL DEFAULT 0;
         `);
 
-        // 3. Demo Kullanıcıları ve Top 100 Kahin Başlangıç Verisi
+        // Demo Kullanıcıları Tohumla
         const checkUsers = await client.query(`SELECT count(*) FROM users`);
         if (parseInt(checkUsers.rows[0].count, 10) === 0) {
             console.info('[DATABASE] Kullanıcı tohumları yükleniyor...');
             await client.query(`
-                INSERT INTO users (id, email, username, balance_kor, streak, quests_today) VALUES
-                ('11111111-1111-1111-1111-111111111111', 'demo@oyver.pro', 'LeisanB', 14500, 5, 1),
-                ('22222222-2222-2222-2222-222222222222', 'ahmet@oyver.pro', 'Ahmet_Kahin', 420000, 12, 3),
-                ('33333333-3333-3333-3333-333333333333', 'ece@oyver.pro', 'Ece_Analist', 315000, 8, 3),
-                ('44444444-4444-4444-4444-444444444444', 'quant@oyver.pro', 'QuantTraderTR', 280000, 6, 2),
-                ('55555555-5555-5555-5555-555555555555', 'zeki@oyver.pro', 'Zeki_Forecaster', 195000, 4, 1)
+                INSERT INTO users (id, email, username, password_hash, balance_kor, streak, quests_today) VALUES
+                ('11111111-1111-1111-1111-111111111111', 'demo@oyver.pro', 'LeisanB', 'OAUTH_MOCK', 14500, 5, 1),
+                ('22222222-2222-2222-2222-222222222222', 'ahmet@oyver.pro', 'Ahmet_Kahin', 'OAUTH_MOCK', 420000, 12, 3),
+                ('33333333-3333-3333-3333-333333333333', 'ece@oyver.pro', 'Ece_Analist', 'OAUTH_MOCK', 315000, 8, 3),
+                ('44444444-4444-4444-4444-444444444444', 'quant@oyver.pro', 'QuantTraderTR', 'OAUTH_MOCK', 280000, 6, 2),
+                ('55555555-5555-5555-5555-555555555555', 'zeki@oyver.pro', 'Zeki_Forecaster', 'OAUTH_MOCK', 195000, 4, 1)
                 ON CONFLICT (email) DO NOTHING;
             `);
         }
 
-        // 4. Başlangıç Pazarları
+        // Başlangıç Pazarları Tohumla
         const checkMarket = await client.query(`SELECT id FROM markets LIMIT 1`);
         if (checkMarket.rows.length === 0) {
             console.info('[DATABASE] Canlı pazarlar tohumlanıyor...');
@@ -279,8 +292,8 @@ app.post('/api/auth/login-mock', async (req, rep) => {
     const email = `${name.toLowerCase()}@oyver.pro`;
 
     const ur = await pool.query(`
-        INSERT INTO users (email, username, balance_kor, streak)
-        VALUES ($1, $2, 14500, 5)
+        INSERT INTO users (email, username, password_hash, balance_kor, streak)
+        VALUES ($1, $2, 'OAUTH_MOCK', 14500, 5)
         ON CONFLICT (email) DO UPDATE SET username = EXCLUDED.username
         RETURNING id, username, balance_kor, streak
     `, [email, name]);
@@ -687,7 +700,7 @@ app.get('/', async (req, reply) => {
                 </div>
             </div>
 
-            <!-- PRO ANALİTİK KİLİDİ (Tıklandığında Mağaza Açılır) -->
+            <!-- PRO ANALİTİK KİLİDİ -->
             <div id="btn-open-shop-drawer" class="relative rounded-2xl border border-slate-700/80 overflow-hidden bg-slate-800/40 p-4 cursor-pointer hover:border-amber-500/50 transition">
                 <div class="space-y-2 filter blur-sm select-none opacity-40">
                     <div class="h-4 bg-slate-700 rounded w-3/4"></div>
@@ -752,7 +765,7 @@ app.get('/', async (req, reply) => {
         </div>
     </div>
 
-    <!-- PRO KOR MAĞAZASI & PAYWALL MODALI -->
+    <!-- PRO KOR MAĞAZASI MODALI -->
     <div id="shop-modal" class="fixed inset-0 bg-slate-950/80 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
         <div class="bg-slate-900 border border-slate-800 w-full max-w-xl rounded-2xl overflow-hidden shadow-2xl flex flex-col">
             <div class="p-5 border-b border-slate-800 flex items-center justify-between bg-slate-800/40">
