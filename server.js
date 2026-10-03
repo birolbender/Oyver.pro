@@ -142,15 +142,16 @@ async function initDatabase() {
     try {
         console.info('[DATABASE] Şema, zaman serisi, topluluk ve kohort tabloları doğrulanıyor...');
         
-        await client.query(`
-            CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+        await client.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
 
+        // 1. ÖNCE TABLOLAR OLUŞTURULUR
+        await client.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 email VARCHAR(255) UNIQUE NOT NULL,
                 username VARCHAR(64) UNIQUE NOT NULL,
                 password_hash VARCHAR(255) DEFAULT 'OAUTH_MOCK',
-                balance_kor NUMERIC(24,6) NOT NULL DEFAULT 14500.000000 CHECK (balance_kor >= 0),
+                balance_kor NUMERIC(24,6) NOT NULL DEFAULT 14500.000000,
                 streak INT NOT NULL DEFAULT 1,
                 quests_today INT NOT NULL DEFAULT 0,
                 quest_rewarded BOOLEAN NOT NULL DEFAULT FALSE,
@@ -167,17 +168,8 @@ async function initDatabase() {
 
             CREATE TABLE IF NOT EXISTS markets (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                slug VARCHAR(255) UNIQUE NOT NULL,
-                category VARCHAR(64) NOT NULL DEFAULT 'EKONOMİ',
+                slug VARCHAR(255) UNIQUE,
                 question TEXT NOT NULL,
-                description TEXT DEFAULT 'Bu pazar ilgili resmi kurumun kesin verisiyle sonuçlandırılacaktır.',
-                source_url TEXT,
-                source_name VARCHAR(128),
-                status VARCHAR(32) NOT NULL DEFAULT 'TRADING',
-                resolved_outcome VARCHAR(8),
-                resolution_proof TEXT,
-                resolved_at TIMESTAMPTZ,
-                closing_date VARCHAR(64) NOT NULL DEFAULT '31 Aralık 2026',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
 
@@ -201,14 +193,7 @@ async function initDatabase() {
                 market_id UUID NOT NULL REFERENCES markets(id) ON DELETE CASCADE,
                 user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 outcome VARCHAR(8) NOT NULL,
-                shares NUMERIC(30,12) NOT NULL DEFAULT 0 CHECK (shares >= 0),
-                total_invested NUMERIC(24,6) NOT NULL DEFAULT 0,
-                entry_prob NUMERIC(6,2) NOT NULL DEFAULT 50.00,
-                realized_pnl NUMERIC(24,6) NOT NULL DEFAULT 0,
-                is_settled BOOLEAN NOT NULL DEFAULT FALSE,
-                settlement_payout NUMERIC(24,6) NOT NULL DEFAULT 0,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                CONSTRAINT uq_user_market_outcome UNIQUE (user_id, market_id, outcome)
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
 
             CREATE TABLE IF NOT EXISTS accounts (
@@ -266,15 +251,71 @@ async function initDatabase() {
                 sponsor_brand VARCHAR(64),
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
+
+            CREATE TABLE IF NOT EXISTS sessions (
+                token CHAR(64) PRIMARY KEY,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
         `);
 
-        // OTOMATİK MİGRASYON GÜVENCESİ
+        // 2. KRİTİK MİGRASYON KALKANI (Eski tablolarda eksik olabilecek TÜM kolonları zorla ekler)
+        console.info('[DATABASE] Sütun migrasyonları zorlanıyor...');
+
+        // MARKETS tablosu onarımı
         await client.query(`
-            ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_prob NUMERIC(6,2) NOT NULL DEFAULT 50.00;
+            ALTER TABLE markets ADD COLUMN IF NOT EXISTS slug VARCHAR(255);
+            ALTER TABLE markets ADD COLUMN IF NOT EXISTS category VARCHAR(64) NOT NULL DEFAULT 'EKONOMİ';
             ALTER TABLE markets ADD COLUMN IF NOT EXISTS description TEXT DEFAULT 'Bu oylama resmi bülten verisiyle sonuçlandırılacaktır.';
+            ALTER TABLE markets ADD COLUMN IF NOT EXISTS source_url TEXT;
+            ALTER TABLE markets ADD COLUMN IF NOT EXISTS source_name VARCHAR(128);
+            ALTER TABLE markets ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'TRADING';
             ALTER TABLE markets ADD COLUMN IF NOT EXISTS resolved_outcome VARCHAR(8);
             ALTER TABLE markets ADD COLUMN IF NOT EXISTS resolution_proof TEXT;
             ALTER TABLE markets ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+            ALTER TABLE markets ADD COLUMN IF NOT EXISTS closing_date VARCHAR(64) NOT NULL DEFAULT '31 Aralık 2026';
+            ALTER TABLE markets ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+        `);
+
+        // USERS tablosu onarımı
+        await client.query(`
+            DO $$ 
+            BEGIN 
+                IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='password_hash') THEN 
+                    ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+                    ALTER TABLE users ALTER COLUMN password_hash SET DEFAULT 'OAUTH_MOCK';
+                END IF;
+            END $$;
+
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS balance_kor NUMERIC(24,6) NOT NULL DEFAULT 14500.000000;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS streak INT NOT NULL DEFAULT 1;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS quests_today INT NOT NULL DEFAULT 0;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS quest_rewarded BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS tier VARCHAR(16) NOT NULL DEFAULT 'ANALYST';
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS monthly_kor_purchased NUMERIC(24,6) NOT NULL DEFAULT 0;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS birth_year INT;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS education_level VARCHAR(32);
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS employment_status VARCHAR(32);
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS industry VARCHAR(64);
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS city VARCHAR(32);
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN NOT NULL DEFAULT FALSE;
+        `);
+
+        // POSITIONS tablosu onarımı
+        await client.query(`
+            ALTER TABLE positions ADD COLUMN IF NOT EXISTS shares NUMERIC(30,12) NOT NULL DEFAULT 0;
+            ALTER TABLE positions ADD COLUMN IF NOT EXISTS total_invested NUMERIC(24,6) NOT NULL DEFAULT 0;
+            ALTER TABLE positions ADD COLUMN IF NOT EXISTS entry_prob NUMERIC(6,2) NOT NULL DEFAULT 50.00;
+            ALTER TABLE positions ADD COLUMN IF NOT EXISTS realized_pnl NUMERIC(24,6) NOT NULL DEFAULT 0;
+            ALTER TABLE positions ADD COLUMN IF NOT EXISTS is_settled BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE positions ADD COLUMN IF NOT EXISTS settlement_payout NUMERIC(24,6) NOT NULL DEFAULT 0;
+            ALTER TABLE positions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+        `);
+
+        // Tekillik (Unique) İndeksleri
+        await client.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_markets_slug ON markets (slug);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_positions_user_market_outcome ON positions (user_id, market_id, outcome);
         `);
 
         for (const code of ['1000', '3000', '4000', '5000']) {
@@ -296,7 +337,7 @@ async function initDatabase() {
             `);
         }
 
-        // 5 Tescilli Resmi Pazar
+        // 5 Tescilli Resmi Pazar Tohumlaması
         const officialMarkets = [
             {
                 slug: 'asgari-ucret-2027',
@@ -940,7 +981,6 @@ app.post('/api/admin/markets/:id/resolve', async (req, rep) => {
 // FRS VE LİYAKAT MOTORU
 class MeritEngine {
     static calculateScorecard(settledPositions, user) {
-        // Yalnızca geçerli sonuçlananları (VOID hariç) Brier'a al
         const validForBrier = settledPositions.filter(p => p.resolved_outcome === 'YES' || p.resolved_outcome === 'NO');
         const totalSettled = settledPositions.length;
 
@@ -2039,7 +2079,6 @@ function renderIndexHtml() {
                 container.appendChild(card);
             });
 
-            // Güvenli Event Listener Delegasyonu (Tırnak çakışmasını sıfırlar)
             container.querySelectorAll('.market-click-title, .market-click-bar, .btn-terminal-yes, .btn-terminal-detail').forEach(el => {
                 el.onclick = () => openMarketDetail(el.getAttribute('data-slug'));
             });
