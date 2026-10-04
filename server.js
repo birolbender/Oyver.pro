@@ -140,7 +140,7 @@ class LedgerEngine {
 async function initDatabase() {
     const client = await pool.connect();
     try {
-        console.info('[DATABASE] Şema, Çözümleme Tabloları ve Sistem Başlatılıyor...');
+        console.info('[DATABASE] Şema, Genişletilmiş Varchar Alanları ve Sistem Başlatılıyor...');
         await client.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
 
         await client.query(`
@@ -152,7 +152,7 @@ async function initDatabase() {
                 role VARCHAR(16) NOT NULL DEFAULT 'USER',
                 balance_kor NUMERIC(24,6) NOT NULL DEFAULT 14500.000000,
                 streak INT NOT NULL DEFAULT 1,
-                tier VARCHAR(32) NOT NULL DEFAULT 'Çaylak',
+                tier VARCHAR(64) NOT NULL DEFAULT 'Çaylak',
                 kvkk_accepted BOOLEAN NOT NULL DEFAULT FALSE,
                 birth_year INT,
                 city VARCHAR(32),
@@ -310,7 +310,7 @@ async function initDatabase() {
             );
         `);
 
-        // Sütun ve İndeks Güvenceleri
+        // Sütun Güvenceleri ve Hotfix (Varchar 16 Hata Çözümü için genişletme)
         await client.query(`
             ALTER TABLE markets ADD COLUMN IF NOT EXISTS sub_category VARCHAR(64);
             ALTER TABLE markets ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'TRADING';
@@ -320,7 +320,8 @@ async function initDatabase() {
             ALTER TABLE markets ADD COLUMN IF NOT EXISTS closes_at TIMESTAMPTZ;
 
             ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(16) NOT NULL DEFAULT 'USER';
-            ALTER TABLE users ADD COLUMN IF NOT EXISTS tier VARCHAR(32) NOT NULL DEFAULT 'Çaylak';
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS tier VARCHAR(64) NOT NULL DEFAULT 'Çaylak';
+            ALTER TABLE users ALTER COLUMN tier TYPE VARCHAR(64);
             ALTER TABLE users ADD COLUMN IF NOT EXISTS kvkk_accepted BOOLEAN NOT NULL DEFAULT FALSE;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS personality_archetype VARCHAR(64) DEFAULT 'Stratejist';
             ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_step INT NOT NULL DEFAULT 1;
@@ -434,7 +435,7 @@ async function initDatabase() {
                 }
             }
         }
-        console.info('[DATABASE] Faz 6: Release Gate Başarılı. Sistem Hazır!');
+        console.info('[DATABASE] Hotfix Başarılı: Varchar(64) Genişletildi ve Sistem Tescillendi.');
     } finally {
         client.release();
     }
@@ -483,7 +484,7 @@ app.get('/ws', { websocket: true }, (connection) => {
     ws.on('close', () => wsClients.delete(ws));
 });
 
-app.get('/health', async () => ({ status: 'UP', version: 'v2.0-STABLE-PRODUCTION', timestamp: new Date().toISOString() }));
+app.get('/health', async () => ({ status: 'UP', version: 'v2.1-HOTFIX', timestamp: new Date().toISOString() }));
 
 app.get('/api/me', async (req) => {
     if (!req.userId) return { username: 'Misafir', role: 'GUEST', balance_kor: 0, streak: 0, tier: 'Gözlemci', kvkk_accepted: false };
@@ -786,7 +787,7 @@ app.post('/api/trade/sell', async (req, rep) => {
     }
 });
 
-// FAZ 6: PAZAR SONUÇLANDIRMA (RESOLVER) ROTASI
+// PAZAR SONUÇLANDIRMA (RESOLVER)
 app.post('/api/admin/markets/:id/resolve', async (req, rep) => {
     if (!req.userId || (req.userRole !== 'ADMIN' && req.username !== 'LeisanB')) {
         return rep.status(403).send({ error: 'Yönetici yetkisi gereklidir.' });
@@ -982,7 +983,7 @@ app.post('/api/auth/login-mock', async (req, rep) => {
 });
 
 // ==========================================
-// 4. FRONTEND ARAYÜZÜ (FINAL RELEASE GATE BUILD)
+// 4. FRONTEND ARAYÜZÜ (HOTFIX BUILD)
 // ==========================================
 function renderIndexHtml() {
     return `<!DOCTYPE html>
@@ -1137,7 +1138,6 @@ function renderIndexHtml() {
                     <i class="fas fa-arrow-left"></i> Tüm Pazarlara Dön
                 </button>
                 <div class="flex items-center gap-2">
-                    <!-- FAZ 6: ADMİN ÇÖZÜMLEME BUTONU (SADECE ADMİN GÖRÜR) -->
                     <button id="btn-admin-resolve-trigger" data-action="open-resolve-modal" class="hidden px-3 py-1.5 bg-emerald-600/30 hover:bg-emerald-600 border border-emerald-500 text-emerald-300 hover:text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5">
                         <i class="fas fa-gavel"></i> Sonuçlandır
                     </button>
@@ -1318,7 +1318,7 @@ function renderIndexHtml() {
         </div>
     </div>
 
-    <!-- FAZ 6: ADMİN PAZAR ÇÖZÜMLEME (RESOLVE) MODALI -->
+    <!-- ADMİN ÇÖZÜMLEME MODAL -->
     <div id="resolve-modal" class="fixed inset-0 bg-slate-950/85 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
         <div class="card-bg border w-full max-w-md rounded-3xl p-6 shadow-2xl space-y-4">
             <div class="flex justify-between items-center pb-2 border-b border-slate-800">
@@ -2023,7 +2023,6 @@ function renderIndexHtml() {
                 document.getElementById('dt-current-prob').textContent = '%' + res.market.probYes;
                 document.getElementById('dt-user-balance').textContent = currentBalance.toLocaleString('tr-TR') + ' KOR';
 
-                // FAZ 6: ADMİN ÇÖZÜMLEME BUTONU GÖRÜNÜRLÜĞÜ
                 var adminResolveBtn = document.getElementById('btn-admin-resolve-trigger');
                 if (adminResolveBtn) {
                     if (currentUserRole === 'ADMIN' || currentUsername === 'LeisanB') {
@@ -2280,7 +2279,7 @@ function renderIndexHtml() {
             });
         }
 
-        // ALFA TERMİNALİ SIRALAMASI
+        // ALFA TERMİNALİ LİDERLİK TABLOSU
         async function openLeaderboard() {
             var d = await fetch('/api/leaderboard').then(function(r){ return r.json(); });
             var list = document.getElementById('leaderboard-list');
@@ -2459,7 +2458,7 @@ function renderIndexHtml() {
             document.getElementById('story-modal').classList.remove('hidden');
         }
 
-        // FAZ 6: ADMİN ÇÖZÜMLEME MODAL FONKSİYONLARI
+        // FAZ 6: ADMİN ÇÖZÜMLEME FONKSİYONLARI
         function openResolveModal() {
             if (!activeDetailMarket) return;
             document.getElementById('resolve-modal-question').textContent = activeDetailMarket.question;
@@ -2546,19 +2545,6 @@ function renderIndexHtml() {
                     '<p>3. <strong>Broker:</strong> 5 ve üzeri pazar tecrübesi ve pozitif getiri sağlayan piyasa gözlemcisi.</p>' +
                     '<p>4. <strong>Fon Yöneticisi:</strong> 10 ve üzeri sonuçlanmış tahmin ve %60 üzeri isabet oranı.</p>' +
                     '<p>5. <strong>Piyasa Yapıcı (Alfa):</strong> Zirvedeki ilk 10 analist; piyasanın en yüksek kalibrasyonlu öngörücüleri.</p>';
-            }
-        }
-
-        function promptLogin() {
-            var name = prompt('Giriş yapılacak kullanıcı adını girin (Örn: LeisanB, Ahmet_Analist):');
-            if (name) {
-                fetch('/api/auth/login-mock', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: name })
-                }).then(function(r){ return r.json(); }).then(function(res){
-                    if (res.success) location.reload();
-                });
             }
         }
 
@@ -2843,5 +2829,5 @@ await initDatabase();
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: '0.0.0.0' }, (err, address) => {
     if (err) { console.error(err); process.exit(1); }
-    console.log(`[OYVER PRO] v2.0-STABLE-PRODUCTION Aktif: ${address}`);
+    console.log(`[OYVER PRO] v2.1-HOTFIX Aktif: ${address}`);
 });
