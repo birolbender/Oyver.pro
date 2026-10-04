@@ -140,7 +140,7 @@ class LedgerEngine {
 async function initDatabase() {
     const client = await pool.connect();
     try {
-        console.info('[DATABASE] Şema, Efsaneler Meydanı ve Pazar Doğrulaması...');
+        console.info('[DATABASE] Şema, Zaman Damgaları ve Tablolar Doğrulanıyor...');
         await client.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
 
         await client.query(`
@@ -152,7 +152,7 @@ async function initDatabase() {
                 role VARCHAR(16) NOT NULL DEFAULT 'USER',
                 balance_kor NUMERIC(24,6) NOT NULL DEFAULT 14500.000000,
                 streak INT NOT NULL DEFAULT 1,
-                tier VARCHAR(32) NOT NULL DEFAULT 'Araştırmacı',
+                tier VARCHAR(32) NOT NULL DEFAULT 'Çaylak',
                 kvkk_accepted BOOLEAN NOT NULL DEFAULT FALSE,
                 birth_year INT,
                 city VARCHAR(32),
@@ -182,6 +182,7 @@ async function initDatabase() {
                 resolution_proof TEXT,
                 resolved_at TIMESTAMPTZ,
                 closing_date VARCHAR(64) NOT NULL DEFAULT '31 Aralık 2026',
+                closes_at TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '90 days'),
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
 
@@ -261,7 +262,6 @@ async function initDatabase() {
                 PRIMARY KEY (duel_id, user_id)
             );
 
-            -- FAZ 2: EFSANELER MEYDANI VERİTABANI TABLOLARI
             CREATE TABLE IF NOT EXISTS vs_polls (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 slug VARCHAR(64) UNIQUE NOT NULL,
@@ -317,8 +317,9 @@ async function initDatabase() {
             ALTER TABLE markets ADD COLUMN IF NOT EXISTS resolved_outcome VARCHAR(8);
             ALTER TABLE markets ADD COLUMN IF NOT EXISTS resolution_proof TEXT;
             ALTER TABLE markets ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+            ALTER TABLE markets ADD COLUMN IF NOT EXISTS closes_at TIMESTAMPTZ;
 
-            ALTER TABLE users ADD COLUMN IF NOT EXISTS tier VARCHAR(32) NOT NULL DEFAULT 'Araştırmacı';
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS tier VARCHAR(32) NOT NULL DEFAULT 'Çaylak';
             ALTER TABLE users ADD COLUMN IF NOT EXISTS kvkk_accepted BOOLEAN NOT NULL DEFAULT FALSE;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS personality_archetype VARCHAR(64) DEFAULT 'Stratejist';
             ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_step INT NOT NULL DEFAULT 1;
@@ -327,7 +328,7 @@ async function initDatabase() {
             CREATE UNIQUE INDEX IF NOT EXISTS uq_hero_duels_slug ON hero_duels (slug);
         `);
 
-        // Mükerrer Hero Düelloları Temizleme
+        // Temizlik
         await client.query(`
             DELETE FROM hero_duels a USING hero_duels b 
             WHERE a.ctid < b.ctid AND (a.slug = b.slug OR a.title = b.title);
@@ -340,10 +341,10 @@ async function initDatabase() {
         // Demo Kullanıcıları
         await client.query(`
             INSERT INTO users (id, email, username, password_hash, role, balance_kor, streak, tier, personality_archetype) VALUES
-            ('11111111-1111-1111-1111-111111111111', 'demo@oyver.pro', 'LeisanB', 'OAUTH_MOCK', 'USER', 14500, 5, 'Doçent', 'Stratejist'),
-            ('22222222-2222-2222-2222-222222222222', 'ahmet@oyver.pro', 'Ahmet_Analist', 'OAUTH_MOCK', 'USER', 420000, 14, 'Ordinaryüs', 'Öncü'),
-            ('33333333-3333-3333-3333-333333333333', 'ece@oyver.pro', 'Ece_Hoca', 'OAUTH_MOCK', 'USER', 315000, 9, 'Profesör', 'Sağlamcı')
-            ON CONFLICT (email) DO NOTHING;
+            ('11111111-1111-1111-1111-111111111111', 'demo@oyver.pro', 'LeisanB', 'OAUTH_MOCK', 'USER', 14500, 5, 'Broker', 'Stratejist'),
+            ('22222222-2222-2222-2222-222222222222', 'ahmet@oyver.pro', 'Ahmet_Analist', 'OAUTH_MOCK', 'USER', 420000, 14, 'Piyasa Yapıcı (Alfa)', 'Öncü'),
+            ('33333333-3333-3333-3333-333333333333', 'ece@oyver.pro', 'Ece_Hoca', 'OAUTH_MOCK', 'USER', 315000, 9, 'Fon Yöneticisi', 'Sağlamcı')
+            ON CONFLICT (email) DO UPDATE SET tier = EXCLUDED.tier;
         `);
 
         // 2 Temel Hero Düello
@@ -360,7 +361,7 @@ async function initDatabase() {
             `, [d.slug, d.title, d.cat, d.optA, d.optB]);
         }
 
-        // FAZ 2: 10 EFSANELER MEYDANI ANKETİNİN VERİTABANINA TESCİLLENMESİ
+        // 10 Efsaneler Meydanı Eşleşmesi
         const legendPolls = [
             { slug: 'vs-messi-ronaldo', title: 'Tüm Zamanların En İyisi Kim?', a: 'Lionel Messi', b: 'Cristiano Ronaldo' },
             { slug: 'vs-tarkan-sezen', title: 'Türk Pop Müziğinin Zirvesi?', a: 'Tarkan', b: 'Sezen Aksu' },
@@ -382,38 +383,39 @@ async function initDatabase() {
             `, [p.slug, p.title, p.a, p.b]);
         }
 
-        // 16 ZENGİN PAZAR (BORSA VE FİNANS AYRI)
+        // 16 ZENGİN PAZAR VE HASSAS CLOSES_AT ZAMAN DAMGALARI
         const rich16Markets = [
-            { slug: 'bist-100-2026', cat: 'BORSA', sub: 'BIST 100', q: 'BIST 100 Endeksi 2026 Yıl Sonunu 12.000 Puanın Üzerinde Kapatır mı?', srcName: 'Borsa İstanbul Bülteni', closing: '31 Aralık 2026', yesR: 10000, noR: 10000 },
-            { slug: 'bist-halka-arz-50', cat: 'BORSA', sub: 'Halka Arz', q: '2026 Yılında Borsa İstanbul’da Halka Arz Edilen Şirket Sayısı 50’yi Aşar mı?', srcName: 'SPK Bültenleri', closing: '31 Aralık 2026', yesR: 12000, noR: 8000 },
-            { slug: 'bist-banka-rekor', cat: 'BORSA', sub: 'Sektör Endeksi', q: 'BIST Bankacılık Endeksi (XBANK) 2026 Son Çeyreğinde Tarihi Zirve Görür mü?', srcName: 'Borsa İstanbul Verileri', closing: '31 Aralık 2026', yesR: 11000, noR: 9000 },
-            { slug: 'ons-altin-3200', cat: 'FİNANS', sub: 'Kıymetli Maden', q: 'Ons Altın Fiyatı 2026 Sonuna Kadar 3.200 Dolar Seviyesini Aşar mı?', srcName: 'Londra Külçe Piyasası (LBMA)', closing: '31 Aralık 2026', yesR: 9000, noR: 11000 },
-            { slug: 'gumus-ons-40', cat: 'FİNANS', sub: 'Kıymetli Maden', q: 'Ons Gümüş Fiyatı 2026 Yılı İçerisinde 40 Dolar Eşiğini Aşar mı?', srcName: 'Comex Kapanış Fiyatları', closing: '31 Aralık 2026', yesR: 10000, noR: 10000 },
-            { slug: 'tcmb-faiz-2026', cat: 'FİNANS', sub: 'Para Politikası', q: 'TCMB Politika Faizini 2026 Yıl Sonuna Kadar %30 veya Altına İndirir mi?', srcName: 'TCMB PPK Karar Metni', closing: '24 Aralık 2026', yesR: 11000, noR: 9000 },
-            { slug: 'asgari-ucret-2027', cat: 'EKONOMİ', sub: 'Gelir & Ücret', q: '2027 Yılı Net Asgari Ücreti 35.000 TL Üzerinde Açıklanır mı?', srcName: 'Çalışma Bakanlığı / Resmi Gazete', closing: '31 Aralık 2026', yesR: 8000, noR: 12000 },
-            { slug: 'enflasyon-2026', cat: 'EKONOMİ', sub: 'Fiyat İstikrarı', q: 'TÜİK Yıllık Tüketici Enflasyonu (TÜFE) 2026 Yılında %20 Altına İner mi?', srcName: 'TÜİK TÜFE Bülteni', closing: '3 Ocak 2027', yesR: 14000, noR: 6000 },
-            { slug: 'turkiye-buyume-2026', cat: 'EKONOMİ', sub: 'Milli Gelir', q: 'Türkiye Ekonomisi 2026 Yıllık GSYH Büyümesi %4 Üzerinde Gerçekleşir mi?', srcName: 'TÜİK Dönemsel GSYH', closing: '15 Mart 2027', yesR: 10000, noR: 10000 },
-            { slug: 'turksat-6a-ticari', cat: 'TEKNOLOJİ', sub: 'Uzay & Uydu', q: 'TÜRKSAT 6A Uydusu 2026 Yılında Tam Kapasite Ticari Hizmete Başlar mı?', srcName: 'Ulaştırma Bakanlığı', closing: '15 Kasım 2026', yesR: 6000, noR: 14000 },
-            { slug: 'yapay-zeka-kanunu', cat: 'TEKNOLOJİ', sub: 'Regülasyon', q: 'TBMM 2026 Yılında Kapsamlı Ulusal Yapay Zeka Yasasını Kabul Eder mi?', srcName: 'Resmi Gazete / TBMM Tutanakları', closing: '31 Aralık 2026', yesR: 10000, noR: 10000 },
-            { slug: 'yerli-unicorn-2026', cat: 'TEKNOLOJİ', sub: 'Girişimcilik', q: '2026 Yılında Türkiye’den Yeni Bir Unicorn (1 Milyar $ Değerleme) Girişim Çıkar mı?', srcName: 'Sanayi Bakanlığı Bülteni', closing: '31 Aralık 2026', yesR: 9000, noR: 11000 },
-            { slug: 'dizi-reyting-rekor', cat: 'DİZİ & MEDYA', sub: 'Televizyon', q: '2026-2027 Dizi Sezonunda Total Reytingde 15 Puan Barajını Aşan Dizi Çıkar mı?', srcName: 'TİAK Resmi Reyting Ölçümleri', closing: '31 Mayıs 2027', yesR: 10000, noR: 10000 },
-            { slug: 'turk-sinema-gise', cat: 'DİZİ & MEDYA', sub: 'Sinema', q: '2026 Yılında Türkiye Gişesinde 4 Milyon Seyirciyi Aşan Yerli Film Olur mu?', srcName: 'Box Office Türkiye', closing: '31 Aralık 2026', yesR: 12000, noR: 8000 },
-            { slug: 'togg-sedan-teslimat', cat: 'OTOMOTİV', sub: 'Elektrikli Araç', q: 'TOGG T10F Sedan Modelinin İlk Ticari Müşteri Teslimatları 2026 İçinde Başlar mı?', srcName: 'TOGG Resmi Basın Bülteni', closing: '31 Aralık 2026', yesR: 7000, noR: 13000 },
-            { slug: 'olimpiyat-madalya-2028', cat: 'SPOR', sub: 'Olimpiyat', q: 'Milli Sporcularımız 2028 Los Angeles Olimpiyatlarında 10 ve Üzeri Madalya Kazanır mı?', srcName: 'TMOK Resmi Kayıtları', closing: '31 Ağustos 2028', yesR: 10000, noR: 10000 }
+            { slug: 'bist-100-2026', cat: 'BORSA', sub: 'BIST 100', q: 'BIST 100 Endeksi 2026 Yıl Sonunu 12.000 Puanın Üzerinde Kapatır mı?', srcName: 'Borsa İstanbul Bülteni', closing: '31 Aralık 2026', closesAt: '2026-12-31T20:59:59Z', yesR: 10000, noR: 10000 },
+            { slug: 'bist-halka-arz-50', cat: 'BORSA', sub: 'Halka Arz', q: '2026 Yılında Borsa İstanbul’da Halka Arz Edilen Şirket Sayısı 50’yi Aşar mı?', srcName: 'SPK Bültenleri', closing: '31 Aralık 2026', closesAt: '2026-12-31T20:59:59Z', yesR: 12000, noR: 8000 },
+            { slug: 'bist-banka-rekor', cat: 'BORSA', sub: 'Sektör Endeksi', q: 'BIST Bankacılık Endeksi (XBANK) 2026 Son Çeyreğinde Tarihi Zirve Görür mü?', srcName: 'Borsa İstanbul Verileri', closing: '31 Aralık 2026', closesAt: '2026-12-31T20:59:59Z', yesR: 11000, noR: 9000 },
+            { slug: 'ons-altin-3200', cat: 'FİNANS', sub: 'Kıymetli Maden', q: 'Ons Altın Fiyatı 2026 Sonuna Kadar 3.200 Dolar Seviyesini Aşar mı?', srcName: 'Londra Külçe Piyasası (LBMA)', closing: '31 Aralık 2026', closesAt: '2026-12-31T20:59:59Z', yesR: 9000, noR: 11000 },
+            { slug: 'gumus-ons-40', cat: 'FİNANS', sub: 'Kıymetli Maden', q: 'Ons Gümüş Fiyatı 2026 Yılı İçerisinde 40 Dolar Eşiğini Aşar mı?', srcName: 'Comex Kapanış Fiyatları', closing: '31 Aralık 2026', closesAt: '2026-12-31T20:59:59Z', yesR: 10000, noR: 10000 },
+            { slug: 'tcmb-faiz-2026', cat: 'FİNANS', sub: 'Para Politikası', q: 'TCMB Politika Faizini 2026 Yıl Sonuna Kadar %30 veya Altına İndirir mi?', srcName: 'TCMB PPK Karar Metni', closing: '24 Aralık 2026', closesAt: '2026-12-24T11:00:00Z', yesR: 11000, noR: 9000 },
+            { slug: 'asgari-ucret-2027', cat: 'EKONOMİ', sub: 'Gelir & Ücret', q: '2027 Yılı Net Asgari Ücreti 35.000 TL Üzerinde Açıklanır mı?', srcName: 'Çalışma Bakanlığı / Resmi Gazete', closing: '31 Aralık 2026', closesAt: '2026-12-31T20:59:59Z', yesR: 8000, noR: 12000 },
+            { slug: 'enflasyon-2026', cat: 'EKONOMİ', sub: 'Fiyat İstikrarı', q: 'TÜİK Yıllık Tüketici Enflasyonu (TÜFE) 2026 Yılında %20 Altına İner mi?', srcName: 'TÜİK TÜFE Bülteni', closing: '3 Ocak 2027', closesAt: '2027-01-03T07:00:00Z', yesR: 14000, noR: 6000 },
+            { slug: 'turkiye-buyume-2026', cat: 'EKONOMİ', sub: 'Milli Gelir', q: 'Türkiye Ekonomisi 2026 Yıllık GSYH Büyümesi %4 Üzerinde Gerçekleşir mi?', srcName: 'TÜİK Dönemsel GSYH', closing: '15 Mart 2027', closesAt: '2027-03-15T07:00:00Z', yesR: 10000, noR: 10000 },
+            { slug: 'turksat-6a-ticari', cat: 'TEKNOLOJİ', sub: 'Uzay & Uydu', q: 'TÜRKSAT 6A Uydusu 2026 Yılında Tam Kapasite Ticari Hizmete Başlar mı?', srcName: 'Ulaştırma Bakanlığı', closing: '15 Kasım 2026', closesAt: '2026-11-15T20:59:59Z', yesR: 6000, noR: 14000 },
+            { slug: 'yapay-zeka-kanunu', cat: 'TEKNOLOJİ', sub: 'Regülasyon', q: 'TBMM 2026 Yılında Kapsamlı Ulusal Yapay Zeka Yasasını Kabul Eder mi?', srcName: 'Resmi Gazete / TBMM Tutanakları', closing: '31 Aralık 2026', closesAt: '2026-12-31T20:59:59Z', yesR: 10000, noR: 10000 },
+            { slug: 'yerli-unicorn-2026', cat: 'TEKNOLOJİ', sub: 'Girişimcilik', q: '2026 Yılında Türkiye’den Yeni Bir Unicorn (1 Milyar $ Değerleme) Girişim Çıkar mı?', srcName: 'Sanayi Bakanlığı Bülteni', closing: '31 Aralık 2026', closesAt: '2026-12-31T20:59:59Z', yesR: 9000, noR: 11000 },
+            { slug: 'dizi-reyting-rekor', cat: 'DİZİ & MEDYA', sub: 'Televizyon', q: '2026-2027 Dizi Sezonunda Total Reytingde 15 Puan Barajını Aşan Dizi Çıkar mı?', srcName: 'TİAK Resmi Reyting Ölçümleri', closing: '31 Mayıs 2027', closesAt: '2027-05-31T20:59:59Z', yesR: 10000, noR: 10000 },
+            { slug: 'turk-sinema-gise', cat: 'DİZİ & MEDYA', sub: 'Sinema', q: '2026 Yılında Türkiye Gişesinde 4 Milyon Seyirciyi Aşan Yerli Film Olur mu?', srcName: 'Box Office Türkiye', closing: '31 Aralık 2026', closesAt: '2026-12-31T20:59:59Z', yesR: 12000, noR: 8000 },
+            { slug: 'togg-sedan-teslimat', cat: 'OTOMOTİV', sub: 'Elektrikli Araç', q: 'TOGG T10F Sedan Modelinin İlk Ticari Müşteri Teslimatları 2026 İçinde Başlar mı?', srcName: 'TOGG Resmi Basın Bülteni', closing: '31 Aralık 2026', closesAt: '2026-12-31T20:59:59Z', yesR: 7000, noR: 13000 },
+            { slug: 'olimpiyat-madalya-2028', cat: 'SPOR', sub: 'Olimpiyat', q: 'Milli Sporcularımız 2028 Los Angeles Olimpiyatlarında 10 ve Üzeri Madalya Kazanır mı?', srcName: 'TMOK Resmi Kayıtları', closing: '31 Ağustos 2028', closesAt: '2028-08-31T20:59:59Z', yesR: 10000, noR: 10000 }
         ];
 
         for (const item of rich16Markets) {
             const mRes = await client.query(`
-                INSERT INTO markets (slug, category, sub_category, question, source_name, closing_date)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO markets (slug, category, sub_category, question, source_name, closing_date, closes_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (slug) DO UPDATE SET 
                     category = EXCLUDED.category,
                     sub_category = EXCLUDED.sub_category,
                     question = EXCLUDED.question,
                     source_name = EXCLUDED.source_name,
-                    closing_date = EXCLUDED.closing_date
+                    closing_date = EXCLUDED.closing_date,
+                    closes_at = EXCLUDED.closes_at
                 RETURNING id
-            `, [item.slug, item.cat, item.sub, item.q, item.srcName, item.closing]);
+            `, [item.slug, item.cat, item.sub, item.q, item.srcName, item.closing, item.closesAt]);
 
             const mId = mRes.rows[0].id;
             await client.query(`INSERT INTO accounts (code, market_id) VALUES ('2100', $1) ON CONFLICT DO NOTHING`, [mId]);
@@ -431,7 +433,7 @@ async function initDatabase() {
                 }
             }
         }
-        console.info('[DATABASE] Faz 2: Hero ve Efsaneler Meydanı Tabloları Hazırlandı.');
+        console.info('[DATABASE] Faz 5: Paylaşım Portalı ve 9:16 Story Altyapısı Hazırlandı.');
     } finally {
         client.release();
     }
@@ -451,7 +453,6 @@ function broadcast(type, payload) {
     }
 }
 
-// GÜVENLİ AUTH KANCASI (MİSAFİR İZOLASYONU)
 app.addHook('onRequest', async (req) => {
     let token = null;
     const cookie = req.headers.cookie;
@@ -481,7 +482,7 @@ app.get('/ws', { websocket: true }, (connection) => {
     ws.on('close', () => wsClients.delete(ws));
 });
 
-app.get('/health', async () => ({ status: 'UP', version: 'v1.2-PHASE2', timestamp: new Date().toISOString() }));
+app.get('/health', async () => ({ status: 'UP', version: 'v1.5-PHASE5', timestamp: new Date().toISOString() }));
 
 app.get('/api/me', async (req) => {
     if (!req.userId) return { username: 'Misafir', role: 'GUEST', balance_kor: 0, streak: 0, tier: 'Gözlemci', kvkk_accepted: false };
@@ -489,7 +490,7 @@ app.get('/api/me', async (req) => {
     return r.rows[0] || {};
 });
 
-// HERO DÜELLOLAR (FAZ 2: KÖR OYLAMA / BANDWAGON KALKANI)
+// HERO DÜELLOLAR
 app.get('/api/duels', async (req) => {
     const r = await pool.query(`SELECT * FROM hero_duels WHERE is_active = true ORDER BY created_at ASC`);
     const userVotes = req.userId ? (await pool.query(`SELECT duel_id, choice FROM duel_votes WHERE user_id = $1`, [req.userId])).rows : [];
@@ -506,7 +507,6 @@ app.get('/api/duels', async (req) => {
                 hasVoted,
                 userChoice: myVote ? myVote.choice : null,
                 totalVotes: tot.toLocaleString('tr-TR'),
-                // Kör Oylama: Oy kullanmayan istemciye sunucu oranları göndermez
                 pctA: hasVoted ? pctA : null,
                 pctB: hasVoted ? (100 - pctA) : null
             };
@@ -538,7 +538,7 @@ app.post('/api/duels/:id/vote', async (req, rep) => {
     }
 });
 
-// FAZ 2: EFSANELER MEYDANI API (CANLI VERİTABANI & KÖR OYLAMA)
+// EFSANELER MEYDANI API
 app.get('/api/vs', async (req) => {
     const r = await pool.query(`SELECT * FROM vs_polls ORDER BY created_at ASC`);
     const userVotes = req.userId ? (await pool.query(`SELECT poll_id, choice FROM vs_votes WHERE user_id = $1`, [req.userId])).rows : [];
@@ -555,7 +555,6 @@ app.get('/api/vs', async (req) => {
                 hasVoted,
                 userChoice: myVote ? myVote.choice : null,
                 totalVotes: tot.toLocaleString('tr-TR'),
-                // Kör Oylama
                 pctA: hasVoted ? pctA : null,
                 pctB: hasVoted ? (100 - pctA) : null
             };
@@ -586,7 +585,7 @@ app.post('/api/vs/:id/vote', async (req, rep) => {
     }
 });
 
-// PAZARLAR & DETAY
+// PAZARLAR & OHLC
 app.get('/api/markets', async () => {
     const r = await pool.query(`
         SELECT m.*, COALESCE(a.yes_reserve, 10000) as yes_reserve, COALESCE(a.no_reserve, 10000) as no_reserve 
@@ -596,7 +595,13 @@ app.get('/api/markets', async () => {
         markets: r.rows.map(m => {
             const y = new Decimal(m.yes_reserve), n = new Decimal(m.no_reserve);
             const probYes = Math.round(n.div(y.plus(n)).mul(100).toNumber());
-            return { ...m, probYes, probNo: 100 - probYes, poolTotal: Math.round(y.plus(n).toNumber()).toLocaleString('tr-TR') };
+            return { 
+                ...m, 
+                probYes, 
+                probNo: 100 - probYes, 
+                poolTotal: Math.round(y.plus(n).toNumber()).toLocaleString('tr-TR'),
+                closesAtMs: m.closes_at ? new Date(m.closes_at).getTime() : (Date.now() + 86400000 * 30)
+            };
         })
     };
 });
@@ -612,9 +617,44 @@ app.get('/api/markets/:slug', async (req, rep) => {
     const y = new Decimal(m.yes_reserve), n = new Decimal(m.no_reserve);
     const probYes = Math.round(n.div(y.plus(n)).mul(100).toNumber());
 
-    let hr = await pool.query(`SELECT prob_yes, pool_total, to_char(created_at, 'DD Mon HH24:MI') as time_label FROM market_price_history WHERE market_id = $1 ORDER BY created_at ASC`, [m.id]);
-    if (hr.rows.length === 0) hr = { rows: [{ prob_yes: 50, time_label: '28 Eki' }, { prob_yes: probYes, time_label: 'Bugün' }] };
-    return { market: { ...m, probYes, probNo: 100 - probYes, poolTotal: Math.round(y.plus(n).toNumber()).toLocaleString('tr-TR') }, history: hr.rows };
+    const hr = await pool.query(`
+        SELECT prob_yes, pool_total, EXTRACT(EPOCH FROM created_at)::BIGINT as time_sec
+        FROM market_price_history WHERE market_id = $1 ORDER BY created_at ASC
+    `, [m.id]);
+
+    const candles = [];
+    const rows = hr.rows;
+
+    if (rows.length === 0) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        for (let i = 6; i >= 0; i--) {
+            const t = nowSec - (i * 86400);
+            candles.push({ time: t, open: 50, high: 52, low: 48, close: 50 });
+        }
+    } else {
+        let prevClose = rows[0].prob_yes;
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            const p = row.prob_yes;
+            const open = prevClose;
+            const close = p;
+            const high = Math.min(99, Math.max(open, close) + Math.floor(Math.random() * 2));
+            const low = Math.max(1, Math.min(open, close) - Math.floor(Math.random() * 2));
+            candles.push({ time: Number(row.time_sec), open, high, low, close });
+            prevClose = close;
+        }
+    }
+
+    return { 
+        market: { 
+            ...m, 
+            probYes, 
+            probNo: 100 - probYes, 
+            poolTotal: Math.round(y.plus(n).toNumber()).toLocaleString('tr-TR'),
+            closesAtMs: m.closes_at ? new Date(m.closes_at).getTime() : (Date.now() + 86400000 * 30)
+        }, 
+        candles 
+    };
 });
 
 // QUOTE MOTORU
@@ -635,7 +675,7 @@ app.post('/api/trade/quote', async (req, rep) => {
     }
 });
 
-// TAHMİN ALIM (BUY)
+// TAHMİN ALIM
 app.post('/api/trade/predict', async (req, rep) => {
     if (!req.userId) return rep.status(401).send({ error: 'Tahmin bildirmek için giriş yapmalısınız.' });
     const { marketId, outcome, amountKor } = req.body || {};
@@ -644,8 +684,9 @@ app.post('/api/trade/predict', async (req, rep) => {
 
     try {
         const result = await runInTransaction(async (c) => {
-            const mCheck = await c.query(`SELECT status FROM markets WHERE id = $1`, [marketId]);
+            const mCheck = await c.query(`SELECT status, closes_at FROM markets WHERE id = $1`, [marketId]);
             if (mCheck.rows.length === 0 || mCheck.rows[0].status !== 'TRADING') throw new Error('Bu oylama kapalıdır.');
+            if (mCheck.rows[0].closes_at && new Date(mCheck.rows[0].closes_at).getTime() <= Date.now()) throw new Error('Bu pazarın süresi dolmuştur.');
 
             const ur = await c.query(`UPDATE users SET balance_kor = balance_kor - $1 WHERE id = $2 AND balance_kor >= $1 RETURNING balance_kor`, [amt.toFixed(6), req.userId]);
             if (ur.rows.length === 0) throw new Error('Yetersiz KOR bakiyesi.');
@@ -699,8 +740,9 @@ app.post('/api/trade/sell', async (req, rep) => {
 
     try {
         const result = await runInTransaction(async (c) => {
-            const mCheck = await c.query(`SELECT status FROM markets WHERE id = $1`, [marketId]);
+            const mCheck = await c.query(`SELECT status, closes_at FROM markets WHERE id = $1`, [marketId]);
             if (mCheck.rows.length === 0 || mCheck.rows[0].status !== 'TRADING') throw new Error('Bu oylama kapalıdır.');
+            if (mCheck.rows[0].closes_at && new Date(mCheck.rows[0].closes_at).getTime() <= Date.now()) throw new Error('Bu pazarın süresi dolmuştur.');
 
             const pr = await c.query(`SELECT shares FROM positions WHERE market_id = $1 AND user_id = $2 AND outcome = $3 FOR UPDATE`, [marketId, req.userId, outcome]);
             if (pr.rows.length === 0 || new Decimal(pr.rows[0].shares).lt(sIn)) throw new Error('Yetersiz pay.');
@@ -743,7 +785,7 @@ app.post('/api/trade/sell', async (req, rep) => {
     }
 });
 
-// PAZAR SONUÇLANDIRMA (RESOLVER)
+// PAZAR SONUÇLANDIRMA
 app.post('/api/admin/markets/:id/resolve', async (req, rep) => {
     if (!req.userId || req.userRole !== 'ADMIN' && req.username !== 'LeisanB') {
         return rep.status(403).send({ error: 'Yönetici yetkisi gereklidir.' });
@@ -869,22 +911,56 @@ app.get('/api/markets/:slug/export', async (req, rep) => {
     return csv;
 });
 
-// LİDERLİK TABLOSU
+// ALFA TERMİNALİ SIRALAMASI
 app.get('/api/leaderboard', async () => {
     const usersRes = await pool.query(`SELECT id, username, streak, tier, balance_kor, personality_archetype FROM users`);
-    const posRes = await pool.query(`SELECT p.* FROM positions p WHERE p.is_settled = true`);
+    const posRes = await pool.query(`SELECT p.*, m.resolved_outcome FROM positions p JOIN markets m ON p.market_id = m.id WHERE p.is_settled = true`);
+
     const leaderboard = usersRes.rows.map(u => {
         const uPositions = posRes.rows.filter(p => p.user_id === u.id);
-        let wonCount = 0, netPnl = 0;
+        let wonCount = 0, netPnl = 0, brierSum = 0;
+
         for (const p of uPositions) {
             if (p.settlement_payout > 0) wonCount++;
             netPnl += parseFloat(p.realized_pnl);
+
+            const actual = (p.outcome === p.resolved_outcome) ? 1.0 : 0.0;
+            const probEst = parseFloat(p.entry_prob) / 100.0;
+            brierSum += Math.pow(probEst - actual, 2);
         }
-        const frsScore = Math.max(0, Math.round((netPnl * 0.35) + (Math.log10(uPositions.length + 1) * 1000 * 0.15) + (u.streak * 50 * 0.10)));
-        return { id: u.id, name: u.username, tier: u.tier, archetype: u.personality_archetype || 'Stratejist', frsScore, winRate: uPositions.length > 0 ? Math.round((wonCount / uPositions.length) * 100) : 0 };
+
+        const settledCount = uPositions.length;
+        const winRate = settledCount > 0 ? Math.round((wonCount / settledCount) * 100) : 0;
+        const avgBrier = settledCount > 0 ? (brierSum / settledCount) : 0.25;
+        const calibrationScore = Math.max(10, Math.min(99, Math.round((1.0 - avgBrier) * 100)));
+        const frsScore = Math.max(0, Math.round((netPnl * 0.35) + (Math.log10(settledCount + 1) * 1000 * 0.15) + (u.streak * 50 * 0.10) + (calibrationScore * 5)));
+
+        let dynamicTier = u.tier || 'Çaylak';
+        if (settledCount < 3) dynamicTier = 'Çaylak';
+        else if (settledCount >= 3 && settledCount < 5) dynamicTier = 'Analist';
+        else if (settledCount >= 5 && netPnl > 0 && settledCount < 10) dynamicTier = 'Broker';
+        else if (settledCount >= 10 && winRate >= 60) dynamicTier = 'Fon Yöneticisi';
+
+        return { 
+            id: u.id, 
+            name: u.username, 
+            tier: dynamicTier, 
+            archetype: u.personality_archetype || 'Stratejist', 
+            frsScore, 
+            calibrationScore,
+            winRate, 
+            settledCount 
+        };
     });
+
     leaderboard.sort((a, b) => b.frsScore - a.frsScore);
-    return { top100: leaderboard.slice(0, 100).map((item, idx) => ({ rank: idx + 1, ...item })) };
+
+    return { 
+        top100: leaderboard.slice(0, 100).map((item, idx) => {
+            if (idx < 3 && item.settledCount >= 5) item.tier = 'Piyasa Yapıcı (Alfa)';
+            return { rank: idx + 1, ...item };
+        }) 
+    };
 });
 
 app.post('/api/contact', async (req, rep) => {
@@ -897,15 +973,15 @@ app.post('/api/auth/login-mock', async (req, rep) => {
     const email = `${name.toLowerCase()}@oyver.pro`;
     const role = name === 'AdminLeisan' ? 'ADMIN' : 'USER';
 
-    const ur = await pool.query(`INSERT INTO users (email, username, role, tier) VALUES ($1, $2, $3, 'Doçent') ON CONFLICT (email) DO UPDATE SET username = EXCLUDED.username, role = EXCLUDED.role RETURNING id, username, balance_kor`, [email, name, role]);
+    const ur = await pool.query(`INSERT INTO users (email, username, role, tier) VALUES ($1, $2, $3, 'Broker') ON CONFLICT (email) DO UPDATE SET username = EXCLUDED.username, role = EXCLUDED.role RETURNING id, username, balance_kor`, [email, name, role]);
     const token = crypto.randomBytes(32).toString('hex');
-    await pool.query(`INSERT INTO sessions (token, user_id) VALUES ($1, $2)`, [token, user.id]);
+    await pool.query(`INSERT INTO sessions (token, user_id) VALUES ($1, $2)`, [token, ur.rows[0].id]);
     rep.header('Set-Cookie', `oyver_token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
     return { success: true };
 });
 
 // ==========================================
-// 4. FRONTEND ARAYÜZÜ (G3 SÖZLEŞMESİ & OBSIDIAN TEMA)
+// 4. FRONTEND ARAYÜZÜ (FAZ 5: ÇOKLU PAYLAŞIM & CANVAS 9:16 STORY)
 // ==========================================
 function renderIndexHtml() {
     return `<!DOCTYPE html>
@@ -915,7 +991,7 @@ function renderIndexHtml() {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OYVER PRO - Liyakat Tabanlı Kolektif Öngörü Terminali</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
     <style>
@@ -950,7 +1026,7 @@ function renderIndexHtml() {
                 </nav>
             </div>
 
-            <!-- G3 SAĞ KÜME (TEK HAP: SERİ + KOR + PROFİL MENÜSÜ) -->
+            <!-- SAĞ ROZET: TEK HAP PROFİL KÜMESİ -->
             <div class="flex items-center space-x-2.5">
                 <div class="relative">
                     <div id="user-badge" class="flex items-center bg-slate-900 border border-slate-800 rounded-xl p-1 pr-3 space-x-2 cursor-pointer hover:border-slate-700 transition" data-action="toggle-user-dropdown">
@@ -959,22 +1035,28 @@ function renderIndexHtml() {
                             <span id="user-streak" class="text-xs font-black text-amber-400">5g</span>
                         </div>
                         <div class="text-xs font-bold text-slate-200" id="user-balance">-- KOR</div>
+                        <span id="user-tier-badge" class="px-2 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-amber-500/10 text-amber-400 border border-amber-500/20">Çaylak</span>
                         <i class="fas fa-chevron-down text-[10px] text-slate-500"></i>
                     </div>
 
-                    <div id="user-dropdown" class="hidden absolute right-0 top-14 w-60 bg-[#0d131f] border border-slate-800 rounded-2xl shadow-2xl p-2 z-50 space-y-1">
+                    <!-- PROFİL AÇILIR MENÜSÜ -->
+                    <div id="user-dropdown" class="hidden absolute right-0 top-14 w-64 bg-[#0d131f] border border-slate-800 rounded-2xl shadow-2xl p-2 z-50 space-y-1">
                         <div class="px-3 py-2 border-b border-slate-800/80 mb-1">
                             <div class="text-xs font-bold text-white flex justify-between">
                                 <span id="dd-username">Misafir</span>
                                 <span class="text-[10px] text-emerald-400 font-bold" id="dd-archetype">-</span>
                             </div>
-                            <div class="text-[10px] text-indigo-400 font-bold" id="dd-tier">Gözlemci</div>
+                            <div class="text-[10px] text-amber-400 font-bold" id="dd-tier">Kademesi: Çaylak</div>
                         </div>
+                        <!-- FAZ 5: PROFİL İÇİ VİRAL SORU ÜRETİCİ -->
+                        <button data-action="open-viral-creator" class="w-full text-left px-3 py-2 text-xs font-bold text-indigo-300 hover:bg-slate-800/60 rounded-xl transition flex items-center gap-2">
+                            <i class="fas fa-bullhorn text-indigo-400"></i> Viral Soru / Anket Üret
+                        </button>
                         <button data-action="open-explainer" class="w-full text-left px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800/60 rounded-xl transition flex items-center gap-2">
                             <i class="fas fa-sparkles text-amber-400"></i> 30s Rehber
                         </button>
-                        <button data-action="open-leaderboard" class="w-full text-left px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800/60 rounded-xl transition flex items-center gap-2">
-                            <i class="fas fa-graduation-cap text-indigo-400"></i> Liyakat Ligi
+                        <button data-action="open-leaderboard" class="w-full text-left px-3 py-2 text-xs font-bold text-amber-300 hover:bg-slate-800/60 rounded-xl transition flex items-center gap-2">
+                            <i class="fas fa-chart-line text-amber-400"></i> Alfa Terminali (Sıralama)
                         </button>
                         <button data-action="toggle-theme" class="w-full text-left px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800/60 rounded-xl transition flex items-center justify-between">
                             <span class="flex items-center gap-2"><i class="fas fa-palette text-pink-400"></i> Tema Değiştir</span>
@@ -998,7 +1080,7 @@ function renderIndexHtml() {
 
     <div class="flex-grow pb-24 sm:pb-12">
         <main id="section-markets">
-            <!-- G3 HERO ALANI (FAZ 2: 2 KART KURALI + ARŞİV BUTONU) -->
+            <!-- G3 HERO ALANI (2 CANLI DÜELLO) -->
             <section class="py-8 border-b border-slate-900 bg-gradient-to-b from-slate-900/30 to-transparent">
                 <div class="container mx-auto px-4 max-w-5xl">
                     <div class="text-center mb-6">
@@ -1042,7 +1124,7 @@ function renderIndexHtml() {
                 <div id="sub-cat-container" class="hidden flex items-center space-x-1.5 overflow-x-auto pt-2 pb-1 border-t border-slate-900 mt-2"></div>
             </section>
 
-            <!-- 16 ZENGİN PAZAR KARTI -->
+            <!-- 16 ZENGİN PAZAR KARTI (FAZ 5: PAYLAŞIM BUTONLARI DAHİL) -->
             <section class="container mx-auto px-4 py-4 max-w-5xl">
                 <div id="market-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5"></div>
             </section>
@@ -1050,18 +1132,29 @@ function renderIndexHtml() {
 
         <!-- PAZAR DETAY SAYFASI (/market/:slug) -->
         <main id="section-market-detail" class="hidden container mx-auto px-4 py-6 max-w-5xl">
-            <button data-action="nav-home" class="text-xs text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-1.5 mb-4">
-                <i class="fas fa-arrow-left"></i> Tüm Pazarlara Dön
-            </button>
+            <div class="flex items-center justify-between mb-4">
+                <button data-action="nav-home" class="text-xs text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-1.5">
+                    <i class="fas fa-arrow-left"></i> Tüm Pazarlara Dön
+                </button>
+                <!-- FAZ 5: DETAY SAYFASI PAYLAŞIM VE 9:16 STORY BUTONU -->
+                <div class="flex items-center gap-2">
+                    <button data-action="open-detail-share" class="px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-indigo-500 rounded-xl text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1.5">
+                        <i class="fas fa-share-alt text-indigo-400"></i> Paylaş
+                    </button>
+                    <button data-action="open-story-creator" class="px-3 py-1.5 bg-gradient-to-r from-pink-600 to-purple-600 hover:opacity-90 rounded-xl text-xs font-bold text-white transition flex items-center gap-1.5">
+                        <i class="fab fa-instagram"></i> 9:16 Story Kartı
+                    </button>
+                </div>
+            </div>
             <div class="flex items-center justify-between gap-3 mb-2">
                 <span id="dt-category" class="px-2.5 py-0.5 rounded text-[10px] font-black uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">KATEGORİ</span>
-                <span class="text-xs text-slate-400"><i class="far fa-clock mr-1"></i><span id="dt-closing-date">--</span></span>
+                <span class="text-xs font-bold" id="dt-countdown-badge"><i class="far fa-clock mr-1"></i><span id="dt-closing-date">--</span></span>
             </div>
             <h1 id="dt-title" class="text-xl sm:text-2xl font-black text-white mb-6 leading-snug">Pazar Başlığı</h1>
 
             <div class="flex border-b border-slate-800 mb-6 gap-6 text-xs font-bold">
                 <button data-action="dt-switch-tab" data-tab="main" id="dt-tab-main" class="pb-2.5 border-b-2 border-indigo-500 text-white flex items-center gap-1.5">
-                    <i class="fas fa-chart-line text-indigo-400"></i> Grafik & Teklif Paneli
+                    <i class="fas fa-chart-line text-indigo-400"></i> Mum Grafiği (TradingView)
                 </button>
                 <button data-action="dt-switch-tab" data-tab="community" id="dt-tab-community" class="pb-2.5 text-slate-400 hover:text-white flex items-center gap-1.5">
                     <i class="fas fa-comments text-pink-400"></i> Topluluk Analizleri <span id="dt-comm-count" class="px-1.5 py-0.2 rounded bg-slate-800 text-[10px]">0</span>
@@ -1075,15 +1168,19 @@ function renderIndexHtml() {
             <div id="dt-view-main" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div class="lg:col-span-2 space-y-6">
                     <div class="card-bg border rounded-2xl p-5 shadow-xl">
-                        <div class="flex items-center justify-between mb-4">
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
                             <div>
-                                <div class="text-xs font-bold text-slate-400 uppercase">EVET Olasılık Eğrisi</div>
+                                <div class="text-xs font-bold text-slate-400 uppercase">EVET Olasılık Mumları (OHLC)</div>
                                 <div class="text-3xl font-black text-emerald-400 mt-0.5" id="dt-current-prob">--%</div>
                             </div>
+                            <div class="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-[11px] font-bold">
+                                <button data-action="chart-tf" data-tf="24H" class="px-2.5 py-1 rounded-lg bg-indigo-600 text-white">24S</button>
+                                <button data-action="chart-tf" data-tf="7D" class="px-2.5 py-1 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white">7G</button>
+                                <button data-action="chart-tf" data-tf="1M" class="px-2.5 py-1 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white">1A</button>
+                                <button data-action="chart-tf" data-tf="ALL" class="px-2.5 py-1 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white">TÜMÜ</button>
+                            </div>
                         </div>
-                        <div class="h-60 w-full relative">
-                            <canvas id="marketChart"></canvas>
-                        </div>
+                        <div id="tv-chart-container" class="h-64 w-full relative rounded-xl overflow-hidden bg-[#0d131f]"></div>
                     </div>
 
                     <div class="card-bg border rounded-2xl p-5 space-y-3">
@@ -1100,6 +1197,7 @@ function renderIndexHtml() {
                     </div>
                 </div>
 
+                <!-- TEKLİF HESAPLAMA PANELİ -->
                 <div class="card-bg border rounded-2xl p-5 shadow-xl space-y-4 h-fit">
                     <div class="flex justify-between items-center pb-2 border-b border-slate-800">
                         <span class="text-xs font-bold text-slate-400 uppercase">Tahmin Konsolu</span>
@@ -1162,7 +1260,7 @@ function renderIndexHtml() {
             </div>
         </main>
 
-        <!-- FAZ 2: EFSANELER MEYDANI (ALL-TIME VS - POPÜLER KÜLTÜR ARENASI) -->
+        <!-- EFSANELER MEYDANI -->
         <main id="section-vs" class="hidden container mx-auto px-4 py-8 max-w-4xl">
             <div class="text-center mb-8">
                 <span class="px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-xs font-bold text-amber-400">Puansız, Risksiz, Saf Kamuoyu Nabzı</span>
@@ -1200,24 +1298,105 @@ function renderIndexHtml() {
             <div class="space-y-3 text-xs leading-relaxed text-slate-300">
                 <div class="p-3 bg-slate-950 rounded-2xl border border-slate-800 space-y-1">
                     <span class="font-black text-amber-400">💰 1. KOR Nedir? Cebimden Para Çıkar mı?</span>
-                    <p class="text-slate-400">Kesinlikle hayır! 14.500 KOR liyakat puanı ücretsiz verilir. Puanların nakit karşılığı ve çekimi yoktur.</p>
+                    <p class="text-slate-400">Kesinlikle hayır! 14.500 KOR liyakat puanı platform tarafından ücretsiz verilir. Puanların TL karşılığı ve çekimi yoktur.</p>
                 </div>
                 <div class="p-3 bg-slate-950 rounded-2xl border border-slate-800 space-y-1">
                     <span class="font-black text-pink-400">⚡ 2. Efsaneler Meydanı Nedir?</span>
                     <p class="text-slate-400">Puan riski olmadan, gündemin en popüler ikilemlerine tek tıkla oy verip toplumun anlık eğilimini gördüğünüz alandır.</p>
                 </div>
                 <div class="p-3 bg-slate-950 rounded-2xl border border-slate-800 space-y-1">
-                    <span class="font-black text-indigo-400">🎓 3. Ordinaryüs Kademesi Nasıl Kazanılır?</span>
-                    <p class="text-slate-400">Tahminleriniz resmi bültenlerle doğrulandıkça Brier kalibrasyon puanınız artar. Sırasıyla Doçent, Profesör ve zirvede Ordinaryüs olursunuz!</p>
+                    <span class="font-black text-indigo-400">🏆 3. Alfa Rütbesi Nasıl Kazanılır?</span>
+                    <p class="text-slate-400">Tahminleriniz bültenlerle doğrulandıkça Brier kalibrasyon puanınız artar. Sırasıyla Analist, Broker, Fon Yöneticisi ve zirvede Alfa olursunuz!</p>
                 </div>
             </div>
             <button data-action="close-explainer" class="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold text-white text-xs transition">
-                Anladım, Öngörüye Başla!
+                Anladım, Terminale Başla!
             </button>
         </div>
     </div>
 
-    <!-- FAZ 2: DÜELLO ARŞİV MODALI -->
+    <!-- FAZ 5: ÇOKLU SOSYAL MEDYA PAYLAŞIM MODALI (NSOSYAL DAHİL) -->
+    <div id="share-modal" class="fixed inset-0 bg-slate-950/85 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
+        <div class="card-bg border w-full max-w-md rounded-3xl p-6 shadow-2xl space-y-4">
+            <div class="flex justify-between items-center pb-2 border-b border-slate-800">
+                <h3 class="text-sm font-black text-white flex items-center gap-2">
+                    <i class="fas fa-share-alt text-indigo-400"></i> Bu Öngörüyü Paylaş
+                </h3>
+                <button data-action="close-share-modal" class="text-slate-400 hover:text-white"><i class="fas fa-times"></i></button>
+            </div>
+            <p class="text-xs text-slate-300 leading-relaxed" id="share-modal-title">Pazar başlığı...</p>
+            <div class="grid grid-cols-2 gap-2 text-xs font-bold pt-2">
+                <a id="share-btn-x" href="#" target="_blank" class="p-3 bg-slate-950 border border-slate-800 hover:border-slate-600 rounded-2xl flex items-center gap-2.5 text-white transition">
+                    <i class="fab fa-x-twitter text-base"></i><span>X'te Paylaş</span>
+                </a>
+                <a id="share-btn-nsosyal" href="#" target="_blank" class="p-3 bg-slate-950 border border-indigo-500/40 hover:border-indigo-400 rounded-2xl flex items-center gap-2.5 text-indigo-300 transition">
+                    <i class="fas fa-hashtag text-base text-indigo-400"></i><span>NSosyal</span>
+                </a>
+                <a id="share-btn-wa" href="#" target="_blank" class="p-3 bg-slate-950 border border-emerald-500/40 hover:border-emerald-400 rounded-2xl flex items-center gap-2.5 text-emerald-300 transition">
+                    <i class="fab fa-whatsapp text-base text-emerald-400"></i><span>WhatsApp</span>
+                </a>
+                <button data-action="trigger-canvas-story" class="p-3 bg-gradient-to-r from-pink-600/30 to-purple-600/30 border border-pink-500/40 hover:border-pink-400 rounded-2xl flex items-center gap-2.5 text-pink-300 transition text-left">
+                    <i class="fab fa-instagram text-base text-pink-400"></i><span>9:16 Story Kartı</span>
+                </button>
+            </div>
+            <button data-action="copy-share-url" class="w-full py-2.5 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl font-bold text-slate-300 text-xs transition flex items-center justify-center gap-2">
+                <i class="fas fa-link"></i> Doğrudan Bağlantıyı Kopyala
+            </button>
+        </div>
+    </div>
+
+    <!-- FAZ 5: 9:16 CANVAS STORY KARTI ÖNİZLEME MODALI -->
+    <div id="story-modal" class="fixed inset-0 bg-slate-950/90 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
+        <div class="card-bg border w-full max-w-sm rounded-3xl p-5 shadow-2xl space-y-4 flex flex-col items-center">
+            <div class="flex justify-between items-center w-full pb-2 border-b border-slate-800">
+                <span class="text-xs font-black text-white flex items-center gap-1.5"><i class="fab fa-instagram text-pink-400"></i> 9:16 Story Görseliniz</span>
+                <button data-action="close-story-modal" class="text-slate-400 hover:text-white"><i class="fas fa-times"></i></button>
+            </div>
+            <!-- Canvas Render Alanı -->
+            <div class="w-full max-w-[270px] aspect-[9/16] rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative bg-[#080c14]">
+                <canvas id="storyCanvas" width="1080" height="1920" class="w-full h-full object-cover"></canvas>
+            </div>
+            <div class="flex gap-2 w-full">
+                <a id="btn-download-story" href="#" download="oyver-story.png" class="flex-1 py-3 bg-gradient-to-r from-pink-600 to-purple-600 rounded-xl font-black text-white text-xs text-center shadow-lg transition">
+                    <i class="fas fa-download mr-1"></i> Görseli İndir
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- FAZ 5: PROFİL İÇİ VİRAL SORU ÜRETİCİ MODAL -->
+    <div id="viral-creator-modal" class="fixed inset-0 bg-slate-950/85 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
+        <div class="card-bg border w-full max-w-md rounded-3xl p-6 shadow-2xl space-y-4">
+            <div class="flex justify-between items-center pb-2 border-b border-slate-800">
+                <h3 class="text-sm font-black text-white flex items-center gap-2">
+                    <i class="fas fa-bullhorn text-indigo-400"></i> Viral Soru / Anket Üret
+                </h3>
+                <button data-action="close-viral-creator" class="text-slate-400 hover:text-white"><i class="fas fa-times"></i></button>
+            </div>
+            <p class="text-xs text-slate-400">Kendi sorunuzu yazın, platformun referans linkiyle doğrudan sosyal medyada oylama başlatın!</p>
+            <div class="space-y-3 text-xs">
+                <div>
+                    <label class="block font-bold text-slate-300 mb-1">Sorunuz</label>
+                    <input type="text" id="v-question" placeholder="Örn: Sizce BIST 100 yılı rekorla kapatır mı?" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white">
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="block font-bold text-slate-300 mb-1">A Şıkkı</label>
+                        <input type="text" id="v-opt-a" value="EVET" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white font-bold">
+                    </div>
+                    <div>
+                        <label class="block font-bold text-slate-300 mb-1">B Şıkkı</label>
+                        <input type="text" id="v-opt-b" value="HAYIR" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white font-bold">
+                    </div>
+                </div>
+                <button data-action="generate-viral-share" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold text-white text-xs shadow-lg transition">
+                    Bağlantı & Paylaşım Kartını Hazırla
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- DÜELLO ARŞİV MODALI -->
     <div id="duel-archive-modal" class="fixed inset-0 bg-slate-950/85 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
         <div class="card-bg border w-full max-w-2xl rounded-3xl p-6 max-h-[85vh] overflow-y-auto space-y-4">
             <div class="flex justify-between items-center pb-3 border-b border-slate-800">
@@ -1230,6 +1409,24 @@ function renderIndexHtml() {
         </div>
     </div>
 
+    <!-- ALFA TERMİNALİ SIRALAMA MODALI -->
+    <div id="leaderboard-modal" class="fixed inset-0 bg-slate-950/85 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
+        <div class="card-bg border w-full max-w-2xl rounded-3xl p-6 max-h-[85vh] flex flex-col shadow-2xl">
+            <div class="flex justify-between items-center pb-3 border-b border-slate-800 mb-3">
+                <div class="flex items-center gap-2">
+                    <i class="fas fa-chart-line text-amber-400 text-lg"></i>
+                    <h3 class="text-base font-black text-white">Alfa Terminali — Piyasa Yapıcılar & Prestij Sıralaması</h3>
+                </div>
+                <button data-action="close-leaderboard" class="text-slate-400 hover:text-white"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="p-3 bg-slate-950 rounded-2xl border border-slate-800 mb-3 text-[11px] text-slate-400 flex justify-between items-center">
+                <span>Rütbeler Brier Kalibrasyon Puanı ve sonuçlanan tahmin doğruluğuna göre atanır.</span>
+                <span class="text-amber-400 font-bold">1 Pay = 1 KOR</span>
+            </div>
+            <div class="overflow-y-auto flex-grow divide-y divide-slate-800/80" id="leaderboard-list"></div>
+        </div>
+    </div>
+
     <!-- KURUMSAL VE BİLGİ MODALI -->
     <div id="info-modal" class="fixed inset-0 bg-slate-950/85 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
         <div class="card-bg border w-full max-w-lg rounded-3xl p-6 max-h-[85vh] overflow-y-auto space-y-4">
@@ -1238,17 +1435,6 @@ function renderIndexHtml() {
                 <button data-action="close-info-modal" class="text-slate-400 hover:text-white"><i class="fas fa-times"></i></button>
             </div>
             <div id="info-modal-content" class="text-xs text-slate-300 leading-relaxed space-y-3"></div>
-        </div>
-    </div>
-
-    <!-- LİDERLİK TABLOSU -->
-    <div id="leaderboard-modal" class="fixed inset-0 bg-slate-950/85 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
-        <div class="card-bg border w-full max-w-xl rounded-3xl p-5 max-h-[85vh] flex flex-col">
-            <div class="flex justify-between items-center pb-3 border-b border-slate-800 mb-3">
-                <div class="flex items-center gap-2"><i class="fas fa-graduation-cap text-amber-400"></i><h3 class="text-base font-black text-white">Liyakat Sıralaması</h3></div>
-                <button data-action="close-leaderboard" class="text-slate-400"><i class="fas fa-times"></i></button>
-            </div>
-            <div class="overflow-y-auto flex-grow divide-y divide-slate-800/80" id="leaderboard-list"></div>
         </div>
     </div>
 
@@ -1268,7 +1454,7 @@ function renderIndexHtml() {
                     <h4 class="text-white font-bold mb-3 uppercase tracking-wider text-[11px]">Platform</h4>
                     <ul class="space-y-2">
                         <li><button data-action="open-drawer" data-drawer="about" class="hover:text-indigo-400 transition">Biz Kimiz?</button></li>
-                        <li><button data-action="open-leaderboard" class="hover:text-indigo-400 transition">Liyakat Sıralaması</button></li>
+                        <li><button data-action="open-leaderboard" class="hover:text-amber-400 transition">Alfa Terminali</button></li>
                         <li><button data-action="nav-vs" class="hover:text-indigo-400 transition">Efsaneler Meydanı</button></li>
                     </ul>
                 </div>
@@ -1277,7 +1463,7 @@ function renderIndexHtml() {
                     <ul class="space-y-2">
                         <li><button data-action="open-drawer" data-drawer="b2b" class="hover:text-indigo-400 transition text-emerald-400">B2B Güven Endeksi</button></li>
                         <li><button data-action="open-drawer" data-drawer="contact" class="hover:text-indigo-400 transition">İletişim & Destek</button></li>
-                        <li><button data-action="open-drawer" data-drawer="rules" class="hover:text-indigo-400 transition">Liyakat Kuralları</button></li>
+                        <li><button data-action="open-drawer" data-drawer="rules" class="hover:text-indigo-400 transition">Alfa Kademeleri</button></li>
                     </ul>
                 </div>
             </div>
@@ -1299,8 +1485,8 @@ function renderIndexHtml() {
         <button data-action="nav-portfolio" class="flex flex-col items-center gap-1 text-slate-400 hover:text-emerald-400 transition">
             <i class="fas fa-briefcase text-base"></i><span class="text-[10px] font-bold">Portföy</span>
         </button>
-        <button data-action="open-leaderboard" class="flex flex-col items-center gap-1 text-slate-400 hover:text-indigo-400 transition">
-            <i class="fas fa-graduation-cap text-base"></i><span class="text-[10px] font-bold">Liyakat</span>
+        <button data-action="open-leaderboard" class="flex flex-col items-center gap-1 text-slate-400 hover:text-amber-400 transition">
+            <i class="fas fa-chart-line text-base"></i><span class="text-[10px] font-bold">Alfa</span>
         </button>
     </nav>
 
@@ -1315,7 +1501,10 @@ function renderIndexHtml() {
         var activeSubCategory = 'ALL';
         var activeDetailMarket = null;
         var activeDetailChoice = 'YES';
-        var chartInstance = null;
+        var activeShareItem = null;
+        var tvChart = null;
+        var tvCandleSeries = null;
+        var currentCandles = [];
 
         function escapeHtml(str) {
             if (!str) return '';
@@ -1390,11 +1579,69 @@ function renderIndexHtml() {
             }
         };
 
+        // CANLI GERİ SAYIM MOTORU
+        function formatCountdown(targetMs) {
+            var diff = targetMs - Date.now();
+            if (diff <= 0) return { label: '⛔ Vadesi Doldu', isExpired: true, isUrgent: false };
+            
+            var totalSec = Math.floor(diff / 1000);
+            var days = Math.floor(totalSec / 86400);
+            var hours = Math.floor((totalSec % 86400) / 3600);
+            var minutes = Math.floor((totalSec % 3600) / 60);
+            var seconds = totalSec % 60;
+
+            if (days >= 1) {
+                return { label: '⏱️ ' + days + 'g ' + hours + 's', isExpired: false, isUrgent: false };
+            } else {
+                var hh = String(hours).padStart(2, '0');
+                var mm = String(minutes).padStart(2, '0');
+                var ss = String(seconds).padStart(2, '0');
+                return { label: '🔥 ' + hh + ':' + mm + ':' + ss, isExpired: false, isUrgent: true };
+            }
+        }
+
+        function updateAllCountdowns() {
+            document.querySelectorAll('[data-countdown-ms]').forEach(function(el) {
+                var ms = Number(el.getAttribute('data-countdown-ms'));
+                var res = formatCountdown(ms);
+                el.textContent = res.label;
+                if (res.isExpired) {
+                    el.className = 'text-[10px] text-slate-500 font-bold';
+                } else if (res.isUrgent) {
+                    el.className = 'text-[10px] text-rose-400 font-black animate-pulse';
+                } else {
+                    el.className = 'text-[10px] text-amber-400 font-bold';
+                }
+            });
+
+            var dtBadge = document.getElementById('dt-countdown-badge');
+            if (dtBadge && activeDetailMarket && activeDetailMarket.closesAtMs) {
+                var dRes = formatCountdown(activeDetailMarket.closesAtMs);
+                dtBadge.textContent = dRes.label;
+                if (dRes.isUrgent) dtBadge.className = 'text-xs font-black text-rose-400 animate-pulse';
+                else dtBadge.className = 'text-xs font-bold text-amber-400';
+
+                var predBtn = document.getElementById('dt-btn-predict');
+                if (predBtn && dRes.isExpired) {
+                    predBtn.disabled = true;
+                    predBtn.textContent = 'Oylama Kapandı';
+                    predBtn.className = 'w-full py-3 rounded-xl bg-slate-800 text-slate-500 font-extrabold text-xs cursor-not-allowed';
+                }
+            }
+        }
+        setInterval(updateAllCountdowns, 1000);
+
         // KART İÇİ HIZLI OY KUTUSU (INLINE POPOVER)
         function toggleQuickVoteBox(marketId, outcome) {
             if (currentUserRole === 'GUEST') {
                 showToast('Tahmin yapabilmek için lütfen giriş yapın.', 'error');
                 promptLogin();
+                return;
+            }
+
+            var m = markets.find(function(x) { return x.id === marketId; });
+            if (m && m.closesAtMs && m.closesAtMs <= Date.now()) {
+                showToast('Bu pazarın oylama süresi dolmuştur.', 'error');
                 return;
             }
 
@@ -1475,7 +1722,7 @@ function renderIndexHtml() {
             }
         }
 
-        // 16 PAZAR KARTI
+        // 16 PAZAR KARTI (FAZ 5: PAYLAŞ BUTONUYLA)
         function renderMarkets() {
             var container = document.getElementById('market-grid');
             if (!container) return;
@@ -1494,7 +1741,10 @@ function renderIndexHtml() {
                     '<div>' +
                         '<div class="flex items-center justify-between mb-2">' +
                             '<span class="px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">' + escapeHtml(m.category) + (m.sub_category ? ' • ' + escapeHtml(m.sub_category) : '') + '</span>' +
-                            '<span class="text-[10px] text-slate-400"><i class="far fa-clock mr-1"></i>' + escapeHtml(m.closing_date) + '</span>' +
+                            '<div class="flex items-center gap-2">' +
+                                '<span data-countdown-ms="' + m.closesAtMs + '" class="text-[10px] text-amber-400 font-bold">Hesaplanıyor...</span>' +
+                                '<button data-action="open-share-card" data-slug="' + m.slug + '" data-title="' + escapeHtml(m.question) + '" class="text-slate-500 hover:text-indigo-400 transition" title="Paylaş"><i class="fas fa-share-alt text-xs"></i></button>' +
+                            '</div>' +
                         '</div>' +
                         '<h3 class="text-xs sm:text-sm font-bold text-white mb-2 leading-snug cursor-pointer hover:text-indigo-400 transition" data-action="open-detail" data-slug="' + m.slug + '">' + escapeHtml(m.question) + '</h3>' +
                         '<div class="text-[10px] text-slate-500 mb-3 flex items-center gap-1"><i class="fas fa-landmark"></i><span>' + escapeHtml(m.source_name) + '</span></div>' +
@@ -1544,9 +1794,10 @@ function renderIndexHtml() {
 
                 container.appendChild(card);
             });
+            updateAllCountdowns();
         }
 
-        // FAZ 2: HERO DÜELLOLAR (2 KART KURALI & KÖR OYLAMA)
+        // HERO DÜELLOLAR
         async function loadHeroDuels() {
             var res = await fetch('/api/duels').then(function(r){ return r.json(); });
             heroDuels = res.duels || [];
@@ -1554,7 +1805,6 @@ function renderIndexHtml() {
             if (!container) return;
             container.innerHTML = '';
 
-            // 2 KART KURALI: Yalnızca ilk 2 kart Hero vitrinine basılır!
             var mainDuels = heroDuels.slice(0, 2);
 
             mainDuels.forEach(function(d) {
@@ -1575,7 +1825,6 @@ function renderIndexHtml() {
                             '</div>' +
                         '</div>';
                 } else {
-                    // Kör Oylama: Oy kullanmadan önce oranlar gizlidir (? % vs ? %)
                     actionArea = 
                         '<div class="grid grid-cols-2 gap-2 mt-3 pt-2 border-t border-slate-800">' +
                             '<button type="button" data-action="duel-vote" data-id="' + d.id + '" data-choice="A" class="py-2.5 px-2 bg-slate-950 hover:bg-indigo-600 border border-slate-800 hover:border-indigo-500 rounded-xl text-[11px] font-bold text-slate-200 hover:text-white transition">' +
@@ -1591,7 +1840,10 @@ function renderIndexHtml() {
                     '<div>' +
                         '<div class="flex justify-between items-center mb-2">' +
                             '<span class="px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">' + escapeHtml(d.category) + '</span>' +
-                            '<span class="text-[10px] text-slate-400 font-semibold">' + (d.hasVoted ? d.totalVotes + ' Oy' : '<i class="fas fa-lock text-[9px] mr-1"></i>Oranlar Gizli') + '</span>' +
+                            '<div class="flex items-center gap-2">' +
+                                '<span class="text-[10px] text-slate-400 font-semibold">' + (d.hasVoted ? d.totalVotes + ' Oy' : '<i class="fas fa-lock text-[9px] mr-1"></i>Oranlar Gizli') + '</span>' +
+                                '<button data-action="open-share-duel" data-title="' + escapeHtml(d.title) + '" class="text-slate-500 hover:text-indigo-400 transition"><i class="fas fa-share-alt text-xs"></i></button>' +
+                            '</div>' +
                         '</div>' +
                         '<h3 class="text-xs sm:text-sm font-extrabold text-white leading-snug mb-3">' + escapeHtml(d.title) + '</h3>' +
                         '<div class="flex items-center justify-between px-3 py-1.5 bg-slate-950/70 rounded-xl border border-slate-800/80 text-xs font-bold">' +
@@ -1649,7 +1901,7 @@ function renderIndexHtml() {
             });
         }
 
-        // FAZ 2: EFSANELER MEYDANI RENDER & OYLAMA (CANLI VERİTABANINDAN ÇEKİLEN)
+        // EFSANELER MEYDANI
         async function loadVsPolls() {
             var res = await fetch('/api/vs').then(function(r){ return r.json(); });
             vsPolls = res.polls || [];
@@ -1675,7 +1927,6 @@ function renderIndexHtml() {
                             '</div>' +
                         '</div>';
                 } else {
-                    // Kör Oylama
                     actionHtml = 
                         '<div class="grid grid-cols-2 gap-2 text-xs font-bold pt-2">' +
                             '<button data-action="vote-vs-card" data-id="' + p.id + '" data-choice="A" class="py-2.5 bg-slate-950 hover:bg-amber-600/30 border border-slate-800 hover:border-amber-500 rounded-xl text-slate-200 transition">' + escapeHtml(p.option_a) + '</button>' +
@@ -1716,7 +1967,7 @@ function renderIndexHtml() {
             }
         }
 
-        // DETAY SAYFASI
+        // DETAY SAYFASI TRADINGVIEW MUM GRAFİĞİ RENDERI
         async function openMarketDetail(slug) {
             history.pushState({}, '', '/market/' + slug);
             switchTab('detail');
@@ -1725,6 +1976,7 @@ function renderIndexHtml() {
             try {
                 var res = await fetch('/api/markets/' + slug).then(function(r){ return r.json(); });
                 activeDetailMarket = res.market;
+                currentCandles = res.candles || [];
 
                 document.getElementById('dt-title').textContent = res.market.question;
                 document.getElementById('dt-category').textContent = res.market.category;
@@ -1738,11 +1990,80 @@ function renderIndexHtml() {
                 switchDetailTab('main');
                 updateDetailChoiceBtns();
                 fetchDetailQuote();
-                renderChart(res.history);
-            } catch(e) {
+                renderTradingViewChart(currentCandles);
+                updateAllCountdowns();
+            } catch (e) {
                 showToast(e.message, 'error');
                 navigateToHome();
             }
+        }
+
+        function renderTradingViewChart(candles) {
+            var container = document.getElementById('tv-chart-container');
+            if (!container) return;
+            container.innerHTML = '';
+
+            try {
+                tvChart = LightweightCharts.createChart(container, {
+                    width: container.clientWidth || 600,
+                    height: 256,
+                    layout: {
+                        background: { color: '#0d131f' },
+                        textColor: '#94a3b8',
+                        fontFamily: "'Inter', sans-serif"
+                    },
+                    grid: {
+                        vertLines: { color: 'rgba(30, 41, 59, 0.4)' },
+                        horzLines: { color: 'rgba(30, 41, 59, 0.4)' }
+                    },
+                    timeScale: {
+                        borderColor: '#1e293b',
+                        timeVisible: true,
+                        secondsVisible: false
+                    },
+                    rightPriceScale: {
+                        borderColor: '#1e293b',
+                        scaleMargins: { top: 0.1, bottom: 0.1 }
+                    }
+                });
+
+                tvCandleSeries = tvChart.addCandlestickSeries({
+                    upColor: '#10b981',
+                    downColor: '#f43f5e',
+                    borderUpColor: '#10b981',
+                    borderDownColor: '#f43f5e',
+                    wickUpColor: '#10b981',
+                    wickDownColor: '#f43f5e'
+                });
+
+                if (candles && candles.length > 0) {
+                    tvCandleSeries.setData(candles);
+                    tvChart.timeScale().fitContent();
+                }
+
+                window.addEventListener('resize', function() {
+                    if (tvChart && container) {
+                        tvChart.applyOptions({ width: container.clientWidth });
+                    }
+                });
+            } catch(e) {
+                console.error('[TRADINGVIEW RENDER HATASI]', e);
+            }
+        }
+
+        function setChartTimeframe(tf) {
+            if (!tvChart || !currentCandles || currentCandles.length === 0) return;
+            var nowSec = Math.floor(Date.now() / 1000);
+            var fromSec = nowSec - 86400;
+
+            if (tf === '7D') fromSec = nowSec - (86400 * 7);
+            else if (tf === '1M') fromSec = nowSec - (86400 * 30);
+            else if (tf === 'ALL') {
+                tvChart.timeScale().fitContent();
+                return;
+            }
+
+            tvChart.timeScale().setVisibleRange({ from: fromSec, to: nowSec });
         }
 
         function switchDetailTab(tab) {
@@ -1757,39 +2078,14 @@ function renderIndexHtml() {
             if (activeBtn) activeBtn.className = 'pb-2.5 border-b-2 border-indigo-500 text-white flex items-center gap-1.5';
             if (activeView) activeView.classList.remove('hidden');
 
+            if (tab === 'main' && tvChart) {
+                setTimeout(function() {
+                    var c = document.getElementById('tv-chart-container');
+                    if (c) tvChart.applyOptions({ width: c.clientWidth });
+                }, 50);
+            }
             if (tab === 'community') loadComments();
             if (tab === 'cohorts') loadCohorts();
-        }
-
-        function renderChart(history) {
-            var ctx = document.getElementById('marketChart').getContext('2d');
-            if (chartInstance) chartInstance.destroy();
-
-            chartInstance = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: history.map(function(h){ return h.time_label; }),
-                    datasets: [{
-                        label: 'EVET (%)',
-                        data: history.map(function(h){ return h.prob_yes; }),
-                        borderColor: '#10b981',
-                        backgroundColor: 'rgba(16, 185, 129, 0.08)',
-                        borderWidth: 2.5,
-                        fill: true,
-                        tension: 0.35,
-                        pointRadius: 3
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        y: { min: 0, max: 100, grid: { color: 'rgba(30, 41, 59, 0.5)' }, ticks: { color: '#64748b' } },
-                        x: { grid: { display: false }, ticks: { color: '#64748b' } }
-                    },
-                    plugins: { legend: { display: false } }
-                }
-            });
         }
 
         function updateDetailChoiceBtns() {
@@ -1886,7 +2182,7 @@ function renderIndexHtml() {
                     '<div class="flex justify-between items-center">' +
                         '<div class="flex items-center gap-2">' +
                             '<strong class="text-white">' + escapeHtml(c.username) + '</strong>' +
-                            '<span class="text-[9px] text-indigo-400 font-bold">[' + escapeHtml(c.tier) + ']</span>' +
+                            '<span class="text-[9px] text-amber-400 font-bold">[' + escapeHtml(c.tier) + ']</span>' +
                             stanceBadge +
                         '</div>' +
                         '<span class="text-[10px] text-slate-500">' + escapeHtml(c.time_formatted) + '</span>' +
@@ -1938,7 +2234,7 @@ function renderIndexHtml() {
             });
         }
 
-        // LİDERLİK TABLOSU
+        // ALFA TERMİNALİ LİDERLİK TABLOSU
         async function openLeaderboard() {
             var d = await fetch('/api/leaderboard').then(function(r){ return r.json(); });
             var list = document.getElementById('leaderboard-list');
@@ -1946,16 +2242,28 @@ function renderIndexHtml() {
 
             d.top100.forEach(function(u) {
                 var item = document.createElement('div');
-                item.className = 'py-3 flex items-center justify-between text-xs px-2';
+                item.className = 'py-3.5 flex items-center justify-between text-xs px-2 hover:bg-slate-900/40 rounded-xl transition';
+                
+                var tierBadgeClass = 'bg-slate-800 text-slate-300 border-slate-700';
+                if (u.tier === 'Piyasa Yapıcı (Alfa)') tierBadgeClass = 'bg-amber-500/20 text-amber-300 border-amber-500/40 font-black';
+                else if (u.tier === 'Fon Yöneticisi') tierBadgeClass = 'bg-purple-500/20 text-purple-300 border-purple-500/40 font-bold';
+                else if (u.tier === 'Broker') tierBadgeClass = 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
+
                 item.innerHTML = 
-                    '<div class="flex items-center gap-2.5">' +
-                        '<span class="w-6 h-6 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center font-black text-[10px] text-amber-400">#' + u.rank + '</span>' +
+                    '<div class="flex items-center gap-3">' +
+                        '<span class="w-7 h-7 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center font-black text-xs text-amber-400">#' + u.rank + '</span>' +
                         '<div>' +
-                            '<strong class="text-white">' + escapeHtml(u.name) + '</strong>' +
-                            '<span class="text-[9px] text-indigo-400 font-bold ml-1.5 px-1.5 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20">' + escapeHtml(u.tier) + '</span>' +
+                            '<div class="flex items-center gap-2">' +
+                                '<strong class="text-white text-xs">' + escapeHtml(u.name) + '</strong>' +
+                                '<span class="text-[9px] px-2 py-0.5 rounded border ' + tierBadgeClass + '">' + escapeHtml(u.tier) + '</span>' +
+                            '</div>' +
+                            '<div class="text-[10px] text-slate-500 mt-0.5">İsabet Oranı: %' + u.winRate + ' | Kalibrasyon Skoru: ' + u.calibrationScore + '</div>' +
                         '</div>' +
                     '</div>' +
-                    '<div class="text-right font-black text-indigo-400">' + u.frsScore.toLocaleString('tr-TR') + ' FRS</div>';
+                    '<div class="text-right">' +
+                        '<div class="font-black text-amber-400 text-xs">' + u.frsScore.toLocaleString('tr-TR') + ' FRS</div>' +
+                        '<div class="text-[10px] text-slate-500">' + u.settledCount + ' Tahmin</div>' +
+                    '</div>';
                 list.appendChild(item);
             });
             document.getElementById('leaderboard-modal').classList.remove('hidden');
@@ -2008,6 +2316,112 @@ function renderIndexHtml() {
             loadPortfolio();
         }
 
+        // FAZ 5: ÇOKLU PAYLAŞIM VE 9:16 STORY KARTI MOTORU
+        function openShareModal(title, slug, choice, prob) {
+            activeShareItem = {
+                title: title,
+                slug: slug,
+                choice: choice || 'EVET',
+                prob: prob || '60',
+                url: window.location.origin + (slug ? '/market/' + slug : '')
+            };
+
+            document.getElementById('share-modal-title').textContent = title;
+            var encodedText = encodeURIComponent('OYVER PRO üzerinde öngörümü bildirdim: "' + title + '"\nSen ne düşünüyorsun? Hemen katıl: ' + activeShareItem.url);
+
+            document.getElementById('share-btn-x').href = 'https://twitter.com/intent/tweet?text=' + encodedText;
+            document.getElementById('share-btn-nsosyal').href = 'https://nsosyal.com/share?url=' + encodeURIComponent(activeShareItem.url) + '&text=' + encodeURIComponent('OYVER PRO Öngörüsü: ' + title);
+            document.getElementById('share-btn-wa').href = 'https://wa.me/?text=' + encodedText;
+
+            document.getElementById('share-modal').classList.remove('hidden');
+        }
+
+        function generateStoryCard() {
+            if (!activeShareItem) return;
+            var canvas = document.getElementById('storyCanvas');
+            var ctx = canvas.getContext('2d');
+
+            // 1080x1920 Full HD Çizim
+            ctx.fillStyle = '#080c14';
+            ctx.fillRect(0, 0, 1080, 1920);
+
+            // Arka Plan Glow Gradyanı
+            var grad = ctx.createRadialGradient(540, 960, 100, 540, 960, 800);
+            grad.addColorStop(0, 'rgba(79, 70, 229, 0.15)');
+            grad.addColorStop(1, 'rgba(8, 12, 20, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 1080, 1920);
+
+            // Logo & Header
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 72px Inter, sans-serif';
+            ctx.fillText('OYVER PRO', 100, 220);
+
+            ctx.fillStyle = '#6366f1';
+            ctx.font = 'bold 36px Inter, sans-serif';
+            ctx.fillText('KOLEKTİF ÖNGÖRÜ TERMİNALİ', 100, 280);
+
+            // Çizgi
+            ctx.strokeStyle = '#1e293b';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(100, 330);
+            ctx.lineTo(980, 330);
+            ctx.stroke();
+
+            // Soru Alanı Kartı
+            ctx.fillStyle = '#0d131f';
+            ctx.strokeStyle = '#334155';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.roundRect(100, 420, 880, 500, 40);
+            ctx.fill();
+            ctx.stroke();
+
+            // Soru Metni (Word-wrap)
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'bold 52px Inter, sans-serif';
+            var words = activeShareItem.title.split(' ');
+            var line = '', y = 540;
+            for (var n = 0; n < words.length; n++) {
+                var testLine = line + words[n] + ' ';
+                var metrics = ctx.measureText(testLine);
+                if (metrics.width > 800 && n > 0) {
+                    ctx.fillText(line, 140, y);
+                    line = words[n] + ' ';
+                    y += 70;
+                } else {
+                    line = testLine;
+                }
+            }
+            ctx.fillText(line, 140, y);
+
+            // Tahmin Rozet Kutusu
+            ctx.fillStyle = '#10b981';
+            ctx.beginPath();
+            ctx.roundRect(100, 1020, 880, 280, 40);
+            ctx.fill();
+
+            ctx.fillStyle = '#ffffff';
+            ctx.font = 'black 64px Inter, sans-serif';
+            ctx.fillText('BENİM TAHMİNİM: ' + activeShareItem.choice, 160, 1160);
+
+            ctx.fillStyle = 'rgba(255,255,255,0.85)';
+            ctx.font = 'bold 38px Inter, sans-serif';
+            ctx.fillText('Sen ne düşünüyorsun? Hemen oyver.pro\'da katıl!', 160, 1230);
+
+            // Alt Bilgi
+            ctx.fillStyle = '#94a3b8';
+            ctx.font = '500 36px Inter, sans-serif';
+            ctx.fillText('oyver.pro | Türkiye’nin Liyakat Tabanlı Tahmin Borsası', 100, 1780);
+
+            // Data URL
+            var dataUrl = canvas.toDataURL('image/png');
+            document.getElementById('btn-download-story').href = dataUrl;
+            document.getElementById('share-modal').classList.add('hidden');
+            document.getElementById('story-modal').classList.remove('hidden');
+        }
+
         // KURUMSAL ÇEKMECELER
         function openDrawer(type) {
             var modal = document.getElementById('info-modal');
@@ -2020,7 +2434,7 @@ function renderIndexHtml() {
                 content.innerHTML = 
                     '<p><strong>OYVER PRO</strong>, manipülasyondan uzak, ölçülebilir ve liyakat tabanlı bir kolektif kamuoyu tahmin terminalidir.</p>' +
                     '<p>Katılımcılar sanal KOR puanlarıyla öngörülerini bildirir. AMM motoru toplumun gerçek beklenti eğrisini anlık hesaplar.</p>' +
-                    '<div class="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs"><strong>Önemli Kural:</strong> Platformda bahis veya kumar unsuru bulunmaz; puanların nakit karşılığı ve para çekimi yoktur. En büyük ödül, isabetli kararlarla <strong>Ordinaryüs</strong> kademesine yükselmektir.</div>';
+                    '<div class="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs"><strong>Önemli Kural:</strong> Platformda bahis veya kumar unsuru bulunmaz; puanların nakit karşılığı ve para çekimi yoktur. En büyük ödül, isabetli kararlarla <strong>Piyasa Yapıcı (Alfa)</strong> kademesine yükselmektir.</div>';
             } else if (type === 'b2b') {
                 title.textContent = 'B2B Güven Endeksi & Doğrulama Metodolojisi';
                 content.innerHTML = 
@@ -2048,13 +2462,13 @@ function renderIndexHtml() {
                         '<button data-action="submit-contact-form" class="w-full py-2.5 bg-indigo-600 rounded-xl font-bold text-white transition">Mesajı İlet</button>' +
                     '</div>';
             } else if (type === 'rules') {
-                title.textContent = 'Liyakat ve Derece Kuralları';
+                title.textContent = 'Alfa Terminali Finansal Kademeleri';
                 content.innerHTML = 
-                    '<p>1. <strong>Araştırmacı:</strong> Platforma yeni katılan analist adayı.</p>' +
-                    '<p>2. <strong>Uzman Analist:</strong> 10 ve üzeri sonuçlanmış pazarda isabet sağlayanlar.</p>' +
-                    '<p>3. <strong>Doçent:</strong> FRS puanı 3000 puanı aşan kalibre öngörücüler.</p>' +
-                    '<p>4. <strong>Profesör:</strong> Brier sapması düşük, uzun süreli istikrar yakalayanlar.</p>' +
-                    '<p>5. <strong>Ordinaryüs:</strong> Türkiye genelinde ilk 10 sıradaki en isabetli beyinler.</p>';
+                    '<p>1. <strong>Çaylak:</strong> Piyasaya yeni adım atan analist adayı (< 3 sonuçlanan tahmin).</p>' +
+                    '<p>2. <strong>Analist:</strong> En az 3 pazarda tahmin bildiren ve veri kalibrasyonu başlayan kullanıcı.</p>' +
+                    '<p>3. <strong>Broker:</strong> 5 ve üzeri pazar tecrübesi ve pozitif getiri sağlayan piyasa gözlemcisi.</p>' +
+                    '<p>4. <strong>Fon Yöneticisi:</strong> 10 ve üzeri sonuçlanmış tahmin ve %60 üzeri isabet oranı.</p>' +
+                    '<p>5. <strong>Piyasa Yapıcı (Alfa):</strong> Zirvedeki ilk 10 analist; piyasanın en yüksek kalibrasyonlu öngörücüleri.</p>';
             }
         }
 
@@ -2108,6 +2522,53 @@ function renderIndexHtml() {
                 document.getElementById('info-modal').classList.add('hidden');
             } else if (act === 'prompt-login') {
                 promptLogin();
+            } else if (act === 'chart-tf') {
+                document.querySelectorAll('[data-action="chart-tf"]').forEach(function(b) {
+                    b.className = 'px-2.5 py-1 rounded-lg hover:bg-slate-900 text-slate-400 hover:text-white';
+                });
+                btn.className = 'px-2.5 py-1 rounded-lg bg-indigo-600 text-white';
+                setChartTimeframe(btn.getAttribute('data-tf'));
+            } else if (act === 'open-share-card') {
+                var s = btn.getAttribute('data-slug');
+                var t = btn.getAttribute('data-title');
+                openShareModal(t, s, 'EVET', '60');
+            } else if (act === 'open-share-duel') {
+                var tDuel = btn.getAttribute('data-title');
+                openShareModal(tDuel, '', 'TERCİHİM', '50');
+            } else if (act === 'open-detail-share') {
+                if (activeDetailMarket) {
+                    openShareModal(activeDetailMarket.question, activeDetailMarket.slug, activeDetailChoice, activeDetailMarket.probYes);
+                }
+            } else if (act === 'open-story-creator' || act === 'trigger-canvas-story') {
+                if (!activeShareItem && activeDetailMarket) {
+                    activeShareItem = {
+                        title: activeDetailMarket.question,
+                        slug: activeDetailMarket.slug,
+                        choice: activeDetailChoice,
+                        prob: activeDetailMarket.probYes
+                    };
+                }
+                generateStoryCard();
+            } else if (act === 'close-share-modal') {
+                document.getElementById('share-modal').classList.add('hidden');
+            } else if (act === 'close-story-modal') {
+                document.getElementById('story-modal').classList.add('hidden');
+            } else if (act === 'copy-share-url') {
+                if (activeShareItem && activeShareItem.url) {
+                    navigator.clipboard.writeText(activeShareItem.url);
+                    showToast('📋 Bağlantı kopyalandı!');
+                    document.getElementById('share-modal').classList.add('hidden');
+                }
+            } else if (act === 'open-viral-creator') {
+                document.getElementById('viral-creator-modal').classList.remove('hidden');
+                document.getElementById('user-dropdown').classList.add('hidden');
+            } else if (act === 'close-viral-creator') {
+                document.getElementById('viral-creator-modal').classList.add('hidden');
+            } else if (act === 'generate-viral-share') {
+                var vQ = document.getElementById('v-question').value;
+                if (!vQ || vQ.trim().length < 5) return showToast('Lütfen geçerli bir soru yazın.', 'error');
+                document.getElementById('viral-creator-modal').classList.add('hidden');
+                openShareModal(vQ.trim(), '', 'GÖRÜŞÜM', '50');
             } else if (act === 'cat-filter') {
                 document.querySelectorAll('.cat-btn').forEach(function(b){
                     b.className = 'cat-btn bg-slate-900 hover:bg-slate-800 text-slate-300 px-4 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap flex items-center gap-1';
@@ -2256,8 +2717,9 @@ function renderIndexHtml() {
                 currentUserRole = me.role || 'GUEST';
                 document.getElementById('user-balance').textContent = currentBalance.toLocaleString('tr-TR') + ' KOR';
                 document.getElementById('user-streak').textContent = (me.streak || 0) + 'g';
+                document.getElementById('user-tier-badge').textContent = me.tier || 'Çaylak';
                 document.getElementById('dd-username').textContent = me.username || 'Misafir';
-                document.getElementById('dd-tier').textContent = 'Kademesi: ' + (me.tier || 'Gözlemci');
+                document.getElementById('dd-tier').textContent = 'Kademesi: ' + (me.tier || 'Çaylak');
                 document.getElementById('dd-archetype').textContent = me.personality_archetype || '-';
 
                 await loadHeroDuels();
@@ -2295,5 +2757,5 @@ await initDatabase();
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: '0.0.0.0' }, (err, address) => {
     if (err) { console.error(err); process.exit(1); }
-    console.log(`[OYVER PRO] v1.2-PHASE2 Aktif: ${address}`);
+    console.log(`[OYVER PRO] v1.5-PHASE5 Aktif: ${address}`);
 });
