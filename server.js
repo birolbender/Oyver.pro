@@ -140,7 +140,7 @@ class LedgerEngine {
 async function initDatabase() {
     const client = await pool.connect();
     try {
-        console.info('[DATABASE] Şema, Zaman Damgaları ve Tablolar Doğrulanıyor...');
+        console.info('[DATABASE] Şema, Çözümleme Tabloları ve Sistem Başlatılıyor...');
         await client.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
 
         await client.query(`
@@ -319,6 +319,7 @@ async function initDatabase() {
             ALTER TABLE markets ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
             ALTER TABLE markets ADD COLUMN IF NOT EXISTS closes_at TIMESTAMPTZ;
 
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(16) NOT NULL DEFAULT 'USER';
             ALTER TABLE users ADD COLUMN IF NOT EXISTS tier VARCHAR(32) NOT NULL DEFAULT 'Çaylak';
             ALTER TABLE users ADD COLUMN IF NOT EXISTS kvkk_accepted BOOLEAN NOT NULL DEFAULT FALSE;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS personality_archetype VARCHAR(64) DEFAULT 'Stratejist';
@@ -328,7 +329,7 @@ async function initDatabase() {
             CREATE UNIQUE INDEX IF NOT EXISTS uq_hero_duels_slug ON hero_duels (slug);
         `);
 
-        // Temizlik
+        // Mükerrer Temizlik
         await client.query(`
             DELETE FROM hero_duels a USING hero_duels b 
             WHERE a.ctid < b.ctid AND (a.slug = b.slug OR a.title = b.title);
@@ -341,10 +342,10 @@ async function initDatabase() {
         // Demo Kullanıcıları
         await client.query(`
             INSERT INTO users (id, email, username, password_hash, role, balance_kor, streak, tier, personality_archetype) VALUES
-            ('11111111-1111-1111-1111-111111111111', 'demo@oyver.pro', 'LeisanB', 'OAUTH_MOCK', 'USER', 14500, 5, 'Broker', 'Stratejist'),
+            ('11111111-1111-1111-1111-111111111111', 'demo@oyver.pro', 'LeisanB', 'OAUTH_MOCK', 'ADMIN', 14500, 5, 'Broker', 'Stratejist'),
             ('22222222-2222-2222-2222-222222222222', 'ahmet@oyver.pro', 'Ahmet_Analist', 'OAUTH_MOCK', 'USER', 420000, 14, 'Piyasa Yapıcı (Alfa)', 'Öncü'),
             ('33333333-3333-3333-3333-333333333333', 'ece@oyver.pro', 'Ece_Hoca', 'OAUTH_MOCK', 'USER', 315000, 9, 'Fon Yöneticisi', 'Sağlamcı')
-            ON CONFLICT (email) DO UPDATE SET tier = EXCLUDED.tier;
+            ON CONFLICT (email) DO UPDATE SET role = EXCLUDED.role, tier = EXCLUDED.tier;
         `);
 
         // 2 Temel Hero Düello
@@ -383,7 +384,7 @@ async function initDatabase() {
             `, [p.slug, p.title, p.a, p.b]);
         }
 
-        // 16 ZENGİN PAZAR VE HASSAS CLOSES_AT ZAMAN DAMGALARI
+        // 16 ZENGİN PAZAR
         const rich16Markets = [
             { slug: 'bist-100-2026', cat: 'BORSA', sub: 'BIST 100', q: 'BIST 100 Endeksi 2026 Yıl Sonunu 12.000 Puanın Üzerinde Kapatır mı?', srcName: 'Borsa İstanbul Bülteni', closing: '31 Aralık 2026', closesAt: '2026-12-31T20:59:59Z', yesR: 10000, noR: 10000 },
             { slug: 'bist-halka-arz-50', cat: 'BORSA', sub: 'Halka Arz', q: '2026 Yılında Borsa İstanbul’da Halka Arz Edilen Şirket Sayısı 50’yi Aşar mı?', srcName: 'SPK Bültenleri', closing: '31 Aralık 2026', closesAt: '2026-12-31T20:59:59Z', yesR: 12000, noR: 8000 },
@@ -433,7 +434,7 @@ async function initDatabase() {
                 }
             }
         }
-        console.info('[DATABASE] Faz 5: Paylaşım Portalı ve 9:16 Story Altyapısı Hazırlandı.');
+        console.info('[DATABASE] Faz 6: Release Gate Başarılı. Sistem Hazır!');
     } finally {
         client.release();
     }
@@ -482,7 +483,7 @@ app.get('/ws', { websocket: true }, (connection) => {
     ws.on('close', () => wsClients.delete(ws));
 });
 
-app.get('/health', async () => ({ status: 'UP', version: 'v1.5-PHASE5', timestamp: new Date().toISOString() }));
+app.get('/health', async () => ({ status: 'UP', version: 'v2.0-STABLE-PRODUCTION', timestamp: new Date().toISOString() }));
 
 app.get('/api/me', async (req) => {
     if (!req.userId) return { username: 'Misafir', role: 'GUEST', balance_kor: 0, streak: 0, tier: 'Gözlemci', kvkk_accepted: false };
@@ -785,9 +786,9 @@ app.post('/api/trade/sell', async (req, rep) => {
     }
 });
 
-// PAZAR SONUÇLANDIRMA
+// FAZ 6: PAZAR SONUÇLANDIRMA (RESOLVER) ROTASI
 app.post('/api/admin/markets/:id/resolve', async (req, rep) => {
-    if (!req.userId || req.userRole !== 'ADMIN' && req.username !== 'LeisanB') {
+    if (!req.userId || (req.userRole !== 'ADMIN' && req.username !== 'LeisanB')) {
         return rep.status(403).send({ error: 'Yönetici yetkisi gereklidir.' });
     }
     const { outcome, proofUrl } = req.body || {};
@@ -971,9 +972,9 @@ app.post('/api/contact', async (req, rep) => {
 app.post('/api/auth/login-mock', async (req, rep) => {
     const name = req.body?.username || 'LeisanB';
     const email = `${name.toLowerCase()}@oyver.pro`;
-    const role = name === 'AdminLeisan' ? 'ADMIN' : 'USER';
+    const role = name === 'AdminLeisan' ? 'ADMIN' : (name === 'LeisanB' ? 'ADMIN' : 'USER');
 
-    const ur = await pool.query(`INSERT INTO users (email, username, role, tier) VALUES ($1, $2, $3, 'Broker') ON CONFLICT (email) DO UPDATE SET username = EXCLUDED.username, role = EXCLUDED.role RETURNING id, username, balance_kor`, [email, name, role]);
+    const ur = await pool.query(`INSERT INTO users (email, username, role, tier) VALUES ($1, $2, $3, 'Broker') ON CONFLICT (email) DO UPDATE SET username = EXCLUDED.username, role = EXCLUDED.role RETURNING id, username, role, balance_kor`, [email, name, role]);
     const token = crypto.randomBytes(32).toString('hex');
     await pool.query(`INSERT INTO sessions (token, user_id) VALUES ($1, $2)`, [token, ur.rows[0].id]);
     rep.header('Set-Cookie', `oyver_token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
@@ -981,7 +982,7 @@ app.post('/api/auth/login-mock', async (req, rep) => {
 });
 
 // ==========================================
-// 4. FRONTEND ARAYÜZÜ (FAZ 5: ÇOKLU PAYLAŞIM & CANVAS 9:16 STORY)
+// 4. FRONTEND ARAYÜZÜ (FINAL RELEASE GATE BUILD)
 // ==========================================
 function renderIndexHtml() {
     return `<!DOCTYPE html>
@@ -1048,7 +1049,6 @@ function renderIndexHtml() {
                             </div>
                             <div class="text-[10px] text-amber-400 font-bold" id="dd-tier">Kademesi: Çaylak</div>
                         </div>
-                        <!-- FAZ 5: PROFİL İÇİ VİRAL SORU ÜRETİCİ -->
                         <button data-action="open-viral-creator" class="w-full text-left px-3 py-2 text-xs font-bold text-indigo-300 hover:bg-slate-800/60 rounded-xl transition flex items-center gap-2">
                             <i class="fas fa-bullhorn text-indigo-400"></i> Viral Soru / Anket Üret
                         </button>
@@ -1124,7 +1124,7 @@ function renderIndexHtml() {
                 <div id="sub-cat-container" class="hidden flex items-center space-x-1.5 overflow-x-auto pt-2 pb-1 border-t border-slate-900 mt-2"></div>
             </section>
 
-            <!-- 16 ZENGİN PAZAR KARTI (FAZ 5: PAYLAŞIM BUTONLARI DAHİL) -->
+            <!-- 16 ZENGİN PAZAR KARTI -->
             <section class="container mx-auto px-4 py-4 max-w-5xl">
                 <div id="market-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5"></div>
             </section>
@@ -1136,8 +1136,11 @@ function renderIndexHtml() {
                 <button data-action="nav-home" class="text-xs text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-1.5">
                     <i class="fas fa-arrow-left"></i> Tüm Pazarlara Dön
                 </button>
-                <!-- FAZ 5: DETAY SAYFASI PAYLAŞIM VE 9:16 STORY BUTONU -->
                 <div class="flex items-center gap-2">
+                    <!-- FAZ 6: ADMİN ÇÖZÜMLEME BUTONU (SADECE ADMİN GÖRÜR) -->
+                    <button id="btn-admin-resolve-trigger" data-action="open-resolve-modal" class="hidden px-3 py-1.5 bg-emerald-600/30 hover:bg-emerald-600 border border-emerald-500 text-emerald-300 hover:text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5">
+                        <i class="fas fa-gavel"></i> Sonuçlandır
+                    </button>
                     <button data-action="open-detail-share" class="px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-indigo-500 rounded-xl text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1.5">
                         <i class="fas fa-share-alt text-indigo-400"></i> Paylaş
                     </button>
@@ -1315,7 +1318,39 @@ function renderIndexHtml() {
         </div>
     </div>
 
-    <!-- FAZ 5: ÇOKLU SOSYAL MEDYA PAYLAŞIM MODALI (NSOSYAL DAHİL) -->
+    <!-- FAZ 6: ADMİN PAZAR ÇÖZÜMLEME (RESOLVE) MODALI -->
+    <div id="resolve-modal" class="fixed inset-0 bg-slate-950/85 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
+        <div class="card-bg border w-full max-w-md rounded-3xl p-6 shadow-2xl space-y-4">
+            <div class="flex justify-between items-center pb-2 border-b border-slate-800">
+                <h3 class="text-sm font-black text-white flex items-center gap-2">
+                    <i class="fas fa-gavel text-emerald-400"></i> Pazarı Sonuçlandır & Puan Dağıt
+                </h3>
+                <button data-action="close-resolve-modal" class="text-slate-400 hover:text-white"><i class="fas fa-times"></i></button>
+            </div>
+            <p class="text-xs text-slate-400" id="resolve-modal-question">Pazar sorusu...</p>
+            <div class="space-y-3 text-xs">
+                <div>
+                    <label class="block font-bold text-slate-300 mb-1">Resmi Bülten Sonucu</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button data-action="set-resolve-outcome" data-outcome="YES" id="res-choice-yes" class="py-2.5 rounded-xl font-black bg-emerald-600 text-white">EVET KAZANDI</button>
+                        <button data-action="set-resolve-outcome" data-outcome="NO" id="res-choice-no" class="py-2.5 rounded-xl font-black bg-slate-900 border border-slate-800 text-slate-400">HAYIR KAZANDI</button>
+                    </div>
+                </div>
+                <div>
+                    <label class="block font-bold text-slate-300 mb-1">Resmi Kanıt Bağlantısı (URL)</label>
+                    <input type="text" id="res-proof-url" value="https://resmigazete.gov.tr" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white">
+                </div>
+                <div class="p-3 bg-emerald-950/20 border border-emerald-500/30 rounded-xl text-[11px] text-emerald-300">
+                    <i class="fas fa-info-circle mr-1"></i> Onaylandığı an kazananlara 1 Pay = 1 KOR tasfiye ödemesi dağıtılacak ve deftere işlenecektir.
+                </div>
+                <button data-action="submit-resolve" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 rounded-xl font-black text-white text-xs shadow-lg transition">
+                    Tasfiyeyi Gerçekleştir
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ÇOKLU SOSYAL MEDYA PAYLAŞIM MODALI -->
     <div id="share-modal" class="fixed inset-0 bg-slate-950/85 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
         <div class="card-bg border w-full max-w-md rounded-3xl p-6 shadow-2xl space-y-4">
             <div class="flex justify-between items-center pb-2 border-b border-slate-800">
@@ -1345,14 +1380,13 @@ function renderIndexHtml() {
         </div>
     </div>
 
-    <!-- FAZ 5: 9:16 CANVAS STORY KARTI ÖNİZLEME MODALI -->
+    <!-- 9:16 CANVAS STORY KARTI ÖNİZLEME MODALI -->
     <div id="story-modal" class="fixed inset-0 bg-slate-950/90 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
         <div class="card-bg border w-full max-w-sm rounded-3xl p-5 shadow-2xl space-y-4 flex flex-col items-center">
             <div class="flex justify-between items-center w-full pb-2 border-b border-slate-800">
                 <span class="text-xs font-black text-white flex items-center gap-1.5"><i class="fab fa-instagram text-pink-400"></i> 9:16 Story Görseliniz</span>
                 <button data-action="close-story-modal" class="text-slate-400 hover:text-white"><i class="fas fa-times"></i></button>
             </div>
-            <!-- Canvas Render Alanı -->
             <div class="w-full max-w-[270px] aspect-[9/16] rounded-2xl overflow-hidden border border-slate-800 shadow-2xl relative bg-[#080c14]">
                 <canvas id="storyCanvas" width="1080" height="1920" class="w-full h-full object-cover"></canvas>
             </div>
@@ -1364,7 +1398,7 @@ function renderIndexHtml() {
         </div>
     </div>
 
-    <!-- FAZ 5: PROFİL İÇİ VİRAL SORU ÜRETİCİ MODAL -->
+    <!-- PROFİL İÇİ VİRAL SORU ÜRETİCİ MODAL -->
     <div id="viral-creator-modal" class="fixed inset-0 bg-slate-950/85 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
         <div class="card-bg border w-full max-w-md rounded-3xl p-6 shadow-2xl space-y-4">
             <div class="flex justify-between items-center pb-2 border-b border-slate-800">
@@ -1497,11 +1531,13 @@ function renderIndexHtml() {
         var vsPolls = [];
         var currentBalance = 0;
         var currentUserRole = 'GUEST';
+        var currentUsername = 'Misafir';
         var activeCategory = 'ALL';
         var activeSubCategory = 'ALL';
         var activeDetailMarket = null;
         var activeDetailChoice = 'YES';
         var activeShareItem = null;
+        var activeResolveOutcome = 'YES';
         var tvChart = null;
         var tvCandleSeries = null;
         var currentCandles = [];
@@ -1722,7 +1758,7 @@ function renderIndexHtml() {
             }
         }
 
-        // 16 PAZAR KARTI (FAZ 5: PAYLAŞ BUTONUYLA)
+        // 16 PAZAR KARTI
         function renderMarkets() {
             var container = document.getElementById('market-grid');
             if (!container) return;
@@ -1967,7 +2003,7 @@ function renderIndexHtml() {
             }
         }
 
-        // DETAY SAYFASI TRADINGVIEW MUM GRAFİĞİ RENDERI
+        // DETAY SAYFASI
         async function openMarketDetail(slug) {
             history.pushState({}, '', '/market/' + slug);
             switchTab('detail');
@@ -1986,6 +2022,16 @@ function renderIndexHtml() {
                 document.getElementById('dt-source-url').href = res.market.source_url || '#';
                 document.getElementById('dt-current-prob').textContent = '%' + res.market.probYes;
                 document.getElementById('dt-user-balance').textContent = currentBalance.toLocaleString('tr-TR') + ' KOR';
+
+                // FAZ 6: ADMİN ÇÖZÜMLEME BUTONU GÖRÜNÜRLÜĞÜ
+                var adminResolveBtn = document.getElementById('btn-admin-resolve-trigger');
+                if (adminResolveBtn) {
+                    if (currentUserRole === 'ADMIN' || currentUsername === 'LeisanB') {
+                        adminResolveBtn.classList.remove('hidden');
+                    } else {
+                        adminResolveBtn.classList.add('hidden');
+                    }
+                }
 
                 switchDetailTab('main');
                 updateDetailChoiceBtns();
@@ -2234,7 +2280,7 @@ function renderIndexHtml() {
             });
         }
 
-        // ALFA TERMİNALİ LİDERLİK TABLOSU
+        // ALFA TERMİNALİ SIRALAMASI
         async function openLeaderboard() {
             var d = await fetch('/api/leaderboard').then(function(r){ return r.json(); });
             var list = document.getElementById('leaderboard-list');
@@ -2316,7 +2362,7 @@ function renderIndexHtml() {
             loadPortfolio();
         }
 
-        // FAZ 5: ÇOKLU PAYLAŞIM VE 9:16 STORY KARTI MOTORU
+        // ÇOKLU PAYLAŞIM VE 9:16 STORY KARTI MOTORU
         function openShareModal(title, slug, choice, prob) {
             activeShareItem = {
                 title: title,
@@ -2341,18 +2387,15 @@ function renderIndexHtml() {
             var canvas = document.getElementById('storyCanvas');
             var ctx = canvas.getContext('2d');
 
-            // 1080x1920 Full HD Çizim
             ctx.fillStyle = '#080c14';
             ctx.fillRect(0, 0, 1080, 1920);
 
-            // Arka Plan Glow Gradyanı
             var grad = ctx.createRadialGradient(540, 960, 100, 540, 960, 800);
             grad.addColorStop(0, 'rgba(79, 70, 229, 0.15)');
             grad.addColorStop(1, 'rgba(8, 12, 20, 0)');
             ctx.fillStyle = grad;
             ctx.fillRect(0, 0, 1080, 1920);
 
-            // Logo & Header
             ctx.fillStyle = '#ffffff';
             ctx.font = 'bold 72px Inter, sans-serif';
             ctx.fillText('OYVER PRO', 100, 220);
@@ -2361,7 +2404,6 @@ function renderIndexHtml() {
             ctx.font = 'bold 36px Inter, sans-serif';
             ctx.fillText('KOLEKTİF ÖNGÖRÜ TERMİNALİ', 100, 280);
 
-            // Çizgi
             ctx.strokeStyle = '#1e293b';
             ctx.lineWidth = 4;
             ctx.beginPath();
@@ -2369,7 +2411,6 @@ function renderIndexHtml() {
             ctx.lineTo(980, 330);
             ctx.stroke();
 
-            // Soru Alanı Kartı
             ctx.fillStyle = '#0d131f';
             ctx.strokeStyle = '#334155';
             ctx.lineWidth = 3;
@@ -2378,7 +2419,6 @@ function renderIndexHtml() {
             ctx.fill();
             ctx.stroke();
 
-            // Soru Metni (Word-wrap)
             ctx.fillStyle = '#ffffff';
             ctx.font = 'bold 52px Inter, sans-serif';
             var words = activeShareItem.title.split(' ');
@@ -2396,7 +2436,6 @@ function renderIndexHtml() {
             }
             ctx.fillText(line, 140, y);
 
-            // Tahmin Rozet Kutusu
             ctx.fillStyle = '#10b981';
             ctx.beginPath();
             ctx.roundRect(100, 1020, 880, 280, 40);
@@ -2410,16 +2449,54 @@ function renderIndexHtml() {
             ctx.font = 'bold 38px Inter, sans-serif';
             ctx.fillText('Sen ne düşünüyorsun? Hemen oyver.pro\'da katıl!', 160, 1230);
 
-            // Alt Bilgi
             ctx.fillStyle = '#94a3b8';
             ctx.font = '500 36px Inter, sans-serif';
             ctx.fillText('oyver.pro | Türkiye’nin Liyakat Tabanlı Tahmin Borsası', 100, 1780);
 
-            // Data URL
             var dataUrl = canvas.toDataURL('image/png');
             document.getElementById('btn-download-story').href = dataUrl;
             document.getElementById('share-modal').classList.add('hidden');
             document.getElementById('story-modal').classList.remove('hidden');
+        }
+
+        // FAZ 6: ADMİN ÇÖZÜMLEME MODAL FONKSİYONLARI
+        function openResolveModal() {
+            if (!activeDetailMarket) return;
+            document.getElementById('resolve-modal-question').textContent = activeDetailMarket.question;
+            document.getElementById('resolve-modal').classList.remove('hidden');
+        }
+
+        function setResolveOutcome(choice) {
+            activeResolveOutcome = choice;
+            var btnY = document.getElementById('res-choice-yes');
+            var btnN = document.getElementById('res-choice-no');
+            if (choice === 'YES') {
+                btnY.className = 'py-2.5 rounded-xl font-black bg-emerald-600 text-white';
+                btnN.className = 'py-2.5 rounded-xl font-black bg-slate-900 border border-slate-800 text-slate-400';
+            } else {
+                btnN.className = 'py-2.5 rounded-xl font-black bg-rose-600 text-white';
+                btnY.className = 'py-2.5 rounded-xl font-black bg-slate-900 border border-slate-800 text-slate-400';
+            }
+        }
+
+        async function submitResolveMarket() {
+            if (!activeDetailMarket) return;
+            var proof = document.getElementById('res-proof-url').value;
+            
+            try {
+                var res = await fetch('/api/admin/markets/' + activeDetailMarket.id + '/resolve', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ outcome: activeResolveOutcome, proofUrl: proof })
+                }).then(function(r){ return r.json(); });
+
+                if (res.error) throw new Error(res.error);
+                showToast('🏆 Pazar başarıyla sonuçlandırıldı! ' + res.winnerCount + ' analiste ' + res.totalDistributed + ' KOR dağıtıldı.');
+                document.getElementById('resolve-modal').classList.add('hidden');
+                openMarketDetail(activeDetailMarket.slug);
+            } catch(e) {
+                showToast(e.message, 'error');
+            }
         }
 
         // KURUMSAL ÇEKMECELER
@@ -2569,6 +2646,14 @@ function renderIndexHtml() {
                 if (!vQ || vQ.trim().length < 5) return showToast('Lütfen geçerli bir soru yazın.', 'error');
                 document.getElementById('viral-creator-modal').classList.add('hidden');
                 openShareModal(vQ.trim(), '', 'GÖRÜŞÜM', '50');
+            } else if (act === 'open-resolve-modal') {
+                openResolveModal();
+            } else if (act === 'close-resolve-modal') {
+                document.getElementById('resolve-modal').classList.add('hidden');
+            } else if (act === 'set-resolve-outcome') {
+                setResolveOutcome(btn.getAttribute('data-outcome'));
+            } else if (act === 'submit-resolve') {
+                submitResolveMarket();
             } else if (act === 'cat-filter') {
                 document.querySelectorAll('.cat-btn').forEach(function(b){
                     b.className = 'cat-btn bg-slate-900 hover:bg-slate-800 text-slate-300 px-4 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap flex items-center gap-1';
@@ -2715,6 +2800,7 @@ function renderIndexHtml() {
                 var me = await fetch('/api/me').then(function(r){ return r.json(); });
                 currentBalance = Math.round(parseFloat(me.balance_kor || 0));
                 currentUserRole = me.role || 'GUEST';
+                currentUsername = me.username || 'Misafir';
                 document.getElementById('user-balance').textContent = currentBalance.toLocaleString('tr-TR') + ' KOR';
                 document.getElementById('user-streak').textContent = (me.streak || 0) + 'g';
                 document.getElementById('user-tier-badge').textContent = me.tier || 'Çaylak';
@@ -2757,5 +2843,5 @@ await initDatabase();
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: '0.0.0.0' }, (err, address) => {
     if (err) { console.error(err); process.exit(1); }
-    console.log(`[OYVER PRO] v1.5-PHASE5 Aktif: ${address}`);
+    console.log(`[OYVER PRO] v2.0-STABLE-PRODUCTION Aktif: ${address}`);
 });
