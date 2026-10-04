@@ -83,7 +83,7 @@ class AMMEngine {
 }
 
 // ==========================================
-// 2. VERİTABANI BAĞLANTISI VE DEFTER
+// 2. VERİTABANI BAĞLANTISI VE ÇİFT TARAFLI DEFTER
 // ==========================================
 pg.types.setTypeParser(1700, (val) => val);
 const pool = new pg.Pool({
@@ -140,7 +140,7 @@ class LedgerEngine {
 async function initDatabase() {
     const client = await pool.connect();
     try {
-        console.info('[DATABASE] Şema, 16 Pazar ve İtibar Tabloları Doğrulanıyor...');
+        console.info('[DATABASE] Şema, P2P Düello ve 16 Pazar doğrulanıyor...');
         await client.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
 
         await client.query(`
@@ -152,15 +152,19 @@ async function initDatabase() {
                 role VARCHAR(16) NOT NULL DEFAULT 'USER',
                 balance_kor NUMERIC(24,6) NOT NULL DEFAULT 14500.000000,
                 streak INT NOT NULL DEFAULT 1,
-                quests_today INT NOT NULL DEFAULT 0,
-                quest_rewarded BOOLEAN NOT NULL DEFAULT FALSE,
                 tier VARCHAR(32) NOT NULL DEFAULT 'Araştırmacı',
+                kvkk_accepted BOOLEAN NOT NULL DEFAULT FALSE,
                 birth_year INT,
-                education_level VARCHAR(32),
-                employment_status VARCHAR(32),
-                industry VARCHAR(64),
                 city VARCHAR(32),
-                onboarding_completed BOOLEAN NOT NULL DEFAULT FALSE,
+                industry VARCHAR(64),
+                fav_team VARCHAR(64),
+                mobility_type VARCHAR(64),
+                risk_choice VARCHAR(8),
+                music_taste VARCHAR(64),
+                coffee_habit VARCHAR(64),
+                contrarian_choice VARCHAR(8),
+                personality_archetype VARCHAR(64) DEFAULT 'Stratejist',
+                profile_step INT NOT NULL DEFAULT 1,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
 
@@ -175,8 +179,6 @@ async function initDatabase() {
                 source_name VARCHAR(128),
                 status VARCHAR(32) NOT NULL DEFAULT 'TRADING',
                 resolved_outcome VARCHAR(8),
-                resolution_proof TEXT,
-                resolved_at TIMESTAMPTZ,
                 closing_date VARCHAR(64) NOT NULL DEFAULT '31 Aralık 2026',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
@@ -236,6 +238,32 @@ async function initDatabase() {
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
 
+            CREATE TABLE IF NOT EXISTS p2p_duels (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                challenger_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                challenged_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                stake_kor NUMERIC(24,6) NOT NULL DEFAULT 5000.000000,
+                status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+                challenger_score INT DEFAULT 0,
+                challenged_score INT DEFAULT 0,
+                challenger_final_guess NUMERIC(10,2),
+                challenged_final_guess NUMERIC(10,2),
+                winner_id UUID REFERENCES users(id),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS hero_duels (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                title TEXT NOT NULL,
+                category VARCHAR(64) NOT NULL,
+                option_a_name TEXT NOT NULL,
+                option_b_name TEXT NOT NULL,
+                votes_a INT NOT NULL DEFAULT 54,
+                votes_b INT NOT NULL DEFAULT 46,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
             CREATE TABLE IF NOT EXISTS comments (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 market_id UUID NOT NULL REFERENCES markets(id) ON DELETE CASCADE,
@@ -245,35 +273,6 @@ async function initDatabase() {
                 shares_at_time NUMERIC(24,2) DEFAULT 0,
                 upvotes INT NOT NULL DEFAULT 0,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-
-            CREATE TABLE IF NOT EXISTS comment_votes (
-                comment_id UUID NOT NULL REFERENCES comments(id) ON DELETE CASCADE,
-                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (comment_id, user_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS hero_duels (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                title TEXT NOT NULL,
-                category VARCHAR(64) NOT NULL,
-                option_a_name TEXT NOT NULL,
-                option_a_img TEXT,
-                option_b_name TEXT NOT NULL,
-                option_b_img TEXT,
-                votes_a INT NOT NULL DEFAULT 5420,
-                votes_b INT NOT NULL DEFAULT 4580,
-                is_active BOOLEAN NOT NULL DEFAULT TRUE,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-
-            CREATE TABLE IF NOT EXISTS duel_votes (
-                duel_id UUID NOT NULL REFERENCES hero_duels(id) ON DELETE CASCADE,
-                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                choice VARCHAR(4) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (duel_id, user_id)
             );
 
             CREATE TABLE IF NOT EXISTS contact_leads (
@@ -304,28 +303,32 @@ async function initDatabase() {
             );
         `);
 
+        // Sütun Güvenceleri
         await client.query(`
             ALTER TABLE markets ADD COLUMN IF NOT EXISTS sub_category VARCHAR(64);
             ALTER TABLE users ADD COLUMN IF NOT EXISTS tier VARCHAR(32) NOT NULL DEFAULT 'Araştırmacı';
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS kvkk_accepted BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS personality_archetype VARCHAR(64) DEFAULT 'Stratejist';
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_step INT NOT NULL DEFAULT 1;
         `);
 
         for (const code of ['1000', '3000', '4000', '5000']) {
             await client.query(`INSERT INTO accounts (code) VALUES ($1) ON CONFLICT DO NOTHING`, [code]);
         }
 
-        // Demo Kullanıcılar (Yalnızca ilk kurulumda)
+        // Demo Kullanıcıları (Yalnızca ilk kurulumda)
         const checkUsers = await client.query(`SELECT count(*) FROM users`);
         if (parseInt(checkUsers.rows[0].count, 10) === 0) {
             await client.query(`
-                INSERT INTO users (id, email, username, password_hash, role, balance_kor, streak, tier) VALUES
-                ('11111111-1111-1111-1111-111111111111', 'demo@oyver.pro', 'LeisanB', 'OAUTH_MOCK', 'USER', 14500, 5, 'Doçent'),
-                ('22222222-2222-2222-2222-222222222222', 'ahmet@oyver.pro', 'Ahmet_Analist', 'OAUTH_MOCK', 'USER', 420000, 14, 'Ordinaryüs'),
-                ('33333333-3333-3333-3333-333333333333', 'ece@oyver.pro', 'Ece_Hoca', 'OAUTH_MOCK', 'USER', 315000, 9, 'Profesör')
+                INSERT INTO users (id, email, username, password_hash, role, balance_kor, streak, tier, personality_archetype) VALUES
+                ('11111111-1111-1111-1111-111111111111', 'demo@oyver.pro', 'LeisanB', 'OAUTH_MOCK', 'USER', 14500, 5, 'Doçent', 'Stratejist'),
+                ('22222222-2222-2222-2222-222222222222', 'ahmet@oyver.pro', 'Ahmet_Analist', 'OAUTH_MOCK', 'USER', 420000, 14, 'Ordinaryüs', 'Öncü'),
+                ('33333333-3333-3333-3333-333333333333', 'ece@oyver.pro', 'Ece_Hoca', 'OAUTH_MOCK', 'USER', 315000, 9, 'Profesör', 'Sağlamcı')
                 ON CONFLICT (email) DO NOTHING;
             `);
         }
 
-        // Hero Düellolar
+        // Hero Düellolar (Yalnızca ilk kurulumda)
         const checkDuels = await client.query(`SELECT count(*) FROM hero_duels`);
         if (parseInt(checkDuels.rows[0].count, 10) === 0) {
             await client.query(`
@@ -335,49 +338,56 @@ async function initDatabase() {
             `);
         }
 
-        // 16 ZENGİN PAZAR TOHUMLAMASI (CANLI HAVUZLARI ASLA SIFIRLAMAZ!)
-        const checkMarkets = await client.query(`SELECT count(*) FROM markets`);
-        if (parseInt(checkMarkets.rows[0].count, 10) === 0) {
-            const rich16Markets = [
-                // BORSA & FİNANS
-                { slug: 'bist-100-2026', cat: 'BORSA & FİNANS', sub: 'BIST 100', q: 'BIST 100 Endeksi 2026 Son Çeyreğini 12.000 Puan Üzerinde Kapatır mı?', srcName: 'Borsa İstanbul Bülteni', closing: '31 Aralık 2026', yesR: 10000, noR: 10000 },
-                { slug: 'bist-halka-arz-50', cat: 'BORSA & FİNANS', sub: 'Halka Arz', q: '2026 Yılında Borsa İstanbul\'da Halka Arz Edilen Şirket Sayısı 50\'yi Aşar mı?', srcName: 'SPK Bültenleri', closing: '31 Aralık 2026', yesR: 12000, noR: 8000 },
-                { slug: 'ons-altin-3000', cat: 'BORSA & FİNANS', sub: 'Emtia & Altın', q: 'Ons Altın Fiyatı 2026 Sonuna Kadar 3.000 Dolar Seviyesini Görür mü?', srcName: 'Londra Külçe Piyasası (LBMA)', closing: '31 Aralık 2026', yesR: 9000, noR: 11000 },
+        // 16 ZENGİN PAZAR (UPSERT MANTIĞIYLA ZORUNLU EKLENİR - ASLA BOŞ KALMAZ!)
+        const rich16Markets = [
+            // BORSA & FİNANS
+            { slug: 'bist-100-2026', cat: 'BORSA & FİNANS', sub: 'BIST 100', q: 'BIST 100 Endeksi 2026 Son Çeyreğini 12.000 Puan Üzerinde Kapatır mı?', srcName: 'Borsa İstanbul Bülteni', closing: '31 Aralık 2026', yesR: 10000, noR: 10000 },
+            { slug: 'bist-halka-arz-50', cat: 'BORSA & FİNANS', sub: 'Halka Arz', q: '2026 Yılında Borsa İstanbul\'da Halka Arz Edilen Şirket Sayısı 50\'yi Aşar mı?', srcName: 'SPK Bültenleri', closing: '31 Aralık 2026', yesR: 12000, noR: 8000 },
+            { slug: 'ons-altin-3000', cat: 'BORSA & FİNANS', sub: 'Altın & Emtia', q: 'Ons Altın Fiyatı 2026 Sonuna Kadar 3.000 Dolar Seviyesini Görür mü?', srcName: 'Londra Külçe Piyasası (LBMA)', closing: '31 Aralık 2026', yesR: 9000, noR: 11000 },
 
-                // SPOR
-                { slug: 'super-lig-90-puan', cat: 'SPOR', sub: 'Futbol', q: '2026-2027 Süper Lig Şampiyonu 90 Puan Barajını Aşar mı?', srcName: 'TFF Resmi Puan Durumu', closing: '30 Mayıs 2027', yesR: 8000, noR: 12000 },
-                { slug: 'derbi-kirmizi-kart', cat: 'SPOR', sub: 'Futbol', q: 'İlk Galatasaray - Fenerbahçe Derbisinde Kırmızı Kart Çıkar mı?', srcName: 'TFF Maç Raporu', closing: '22 Kasım 2026', yesR: 11000, noR: 9000 },
-                { slug: 'efes-final-four', cat: 'SPOR', sub: 'Basketbol', q: 'Anadolu Efes 2026-2027 EuroLeague Sezonunda Final Four\'a Kalır mı?', srcName: 'EuroLeague Basketball', closing: '15 Mayıs 2027', yesR: 12000, noR: 8000 },
-                { slug: 'f1-ferrari-sampiyon', cat: 'SPOR', sub: 'Formula 1', q: '2026 Formula 1 Takımlar Şampiyonluğunu Ferrari Kazanır mı?', srcName: 'FIA Resmi Sonuçları', closing: '28 Kasım 2026', yesR: 13000, noR: 7000 },
+            // SPOR
+            { slug: 'super-lig-90-puan', cat: 'SPOR', sub: 'Futbol', q: '2026-2027 Süper Lig Şampiyonu 90 Puan Barajını Aşar mı?', srcName: 'TFF Resmi Puan Durumu', closing: '30 Mayıs 2027', yesR: 8000, noR: 12000 },
+            { slug: 'derbi-kirmizi-kart', cat: 'SPOR', sub: 'Futbol', q: 'İlk Galatasaray - Fenerbahçe Derbisinde Kırmızı Kart Çıkar mı?', srcName: 'TFF Maç Raporu', closing: '22 Kasım 2026', yesR: 11000, noR: 9000 },
+            { slug: 'efes-final-four', cat: 'SPOR', sub: 'Basketbol', q: 'Anadolu Efes 2026-2027 EuroLeague Sezonunda Final Four\'a Kalır mı?', srcName: 'EuroLeague Basketball', closing: '15 Mayıs 2027', yesR: 12000, noR: 8000 },
+            { slug: 'f1-ferrari-sampiyon', cat: 'SPOR', sub: 'Formula 1', q: '2026 Formula 1 Takımlar Şampiyonluğunu Ferrari Kazanır mı?', srcName: 'FIA Resmi Sonuçları', closing: '28 Kasım 2026', yesR: 13000, noR: 7000 },
 
-                // EKONOMİ & YAŞAM
-                { slug: 'asgari-ucret-2027', cat: 'EKONOMİ', sub: 'Asgari Ücret', q: '2027 Yılı Net Asgari Ücreti 35.000 TL Üzerinde Açıklanır mı?', srcName: 'Çalışma Bakanlığı / Resmi Gazete', closing: '31 Aralık 2026', yesR: 8000, noR: 12000 },
-                { slug: 'tcmb-faiz-2026', cat: 'EKONOMİ', sub: 'Faiz', q: 'TCMB Politika Faizini 2026 Yıl Sonuna Kadar %30 veya Altına İndirir mi?', srcName: 'TCMB PPK Karar Metni', closing: '24 Aralık 2026', yesR: 11000, noR: 9000 },
-                { slug: 'enflasyon-tek-hane', cat: 'EKONOMİ', sub: 'Enflasyon', q: 'TÜİK Yıllık Tüketici Enflasyonu 2026 Yılında %20 Altına İner mi?', srcName: 'TÜİK TÜFE Bülteni', closing: '3 Ocak 2027', yesR: 14000, noR: 6000 },
+            // EKONOMİ & YAŞAM
+            { slug: 'asgari-ucret-2027', cat: 'EKONOMİ', sub: 'Asgari Ücret', q: '2027 Yılı Net Asgari Ücreti 35.000 TL Üzerinde Açıklanır mı?', srcName: 'Çalışma Bakanlığı / Resmi Gazete', closing: '31 Aralık 2026', yesR: 8000, noR: 12000 },
+            { slug: 'tcmb-faiz-2026', cat: 'EKONOMİ', sub: 'Faiz', q: 'TCMB Politika Faizini 2026 Yıl Sonuna Kadar %30 veya Altına İndirir mi?', srcName: 'TCMB PPK Karar Metni', closing: '24 Aralık 2026', yesR: 11000, noR: 9000 },
+            { slug: 'enflasyon-tek-hane', cat: 'EKONOMİ', sub: 'Enflasyon', q: 'TÜİK Yıllık Tüketici Enflasyonu 2026 Yılında %20 Altına İner mi?', srcName: 'TÜİK TÜFE Bülteni', closing: '3 Ocak 2027', yesR: 14000, noR: 6000 },
 
-                // TEKNOLOJİ
-                { slug: 'turksat-6a-ticari', cat: 'TEKNOLOJİ', sub: 'Uzay & Uydu', q: 'TÜRKSAT 6A Uydusu 2026 Yılında Tam Kapasite Ticari Hizmete Başlar mı?', srcName: 'Ulaştırma Bakanlığı', closing: '15 Kasım 2026', yesR: 6000, noR: 14000 },
-                { slug: 'yapay-zeka-kanunu', cat: 'TEKNOLOJİ', sub: 'Yapay Zeka', q: 'TBMM 2026 Yılında Kapsamlı Ulusal Yapay Zeka Yasasını Kabul Eder mi?', srcName: 'Resmi Gazete / TBMM', closing: '31 Aralık 2026', yesR: 10000, noR: 10000 },
-                { slug: 'yerli-unicorn-2026', cat: 'TEKNOLOJİ', sub: 'Girişimcilik', q: '2026 Yılında Türkiye\'den Yeni Bir Unicorn (1 Milyar $ Değerleme) Girişim Çıkar mı?', srcName: 'Sanayi Bakanlığı', closing: '31 Aralık 2026', yesR: 9000, noR: 11000 },
+            // TEKNOLOJİ
+            { slug: 'turksat-6a-ticari', cat: 'TEKNOLOJİ', sub: 'Uzay & Uydu', q: 'TÜRKSAT 6A Uydusu 2026 Yılında Tam Kapasite Ticari Hizmete Başlar mı?', srcName: 'Ulaştırma Bakanlığı', closing: '15 Kasım 2026', yesR: 6000, noR: 14000 },
+            { slug: 'yapay-zeka-kanunu', cat: 'TEKNOLOJİ', sub: 'Yapay Zeka', q: 'TBMM 2026 Yılında Kapsamlı Ulusal Yapay Zeka Yasasını Kabul Eder mi?', srcName: 'Resmi Gazete / TBMM', closing: '31 Aralık 2026', yesR: 10000, noR: 10000 },
+            { slug: 'yerli-unicorn-2026', cat: 'TEKNOLOJİ', sub: 'Yapay Zeka', q: '2026 Yılında Türkiye\'den Yeni Bir Unicorn (1 Milyar $ Değerleme) Girişim Çıkar mı?', srcName: 'Sanayi Bakanlığı', closing: '31 Aralık 2026', yesR: 9000, noR: 11000 },
 
-                // MODA & STİL
-                { slug: 'ist-moda-haftasi', cat: 'MODA & STİL', sub: 'Trendler', q: 'İstanbul Moda Haftası 2027 Resmi Takviminde 20+ Yabancı Tasarımcı Yer Alır mı?', srcName: 'İHKİB Basın Bülteni', closing: '20 Mart 2027', yesR: 10000, noR: 10000 },
-                { slug: 'surdurulebilir-tekstil', cat: 'MODA & STİL', sub: 'Lüks & Tasarım', q: 'Türkiye\'nin 2026 Tekstil İhracatında Geri Dönüştürülmüş Ürün Payı %15\'i Aşar mı?', srcName: 'TİM İhracat Raporu', closing: '15 Ocak 2027', yesR: 12000, noR: 8000 },
+            // MODA & STİL
+            { slug: 'ist-moda-haftasi', cat: 'MODA & STİL', sub: 'Trendler', q: 'İstanbul Moda Haftası 2027 Resmi Takviminde 20+ Yabancı Tasarımcı Yer Alır mı?', srcName: 'İHKİB Basın Bülteni', closing: '20 Mart 2027', yesR: 10000, noR: 10000 },
+            { slug: 'surdurulebilir-tekstil', cat: 'MODA & STİL', sub: 'Lüks Tüketim', q: 'Türkiye\'nin 2026 Tekstil İhracatında Geri Dönüştürülmüş Ürün Payı %15\'i Aşar mı?', srcName: 'TİM İhracat Raporu', closing: '15 Ocak 2027', yesR: 12000, noR: 8000 },
 
-                // KÜLTÜR & MEDYA
-                { slug: 'turizm-ziyaretci-2026', cat: 'KÜLTÜR & MEDYA', sub: 'Turizm & Yaşam', q: '2026 Yılında Türkiye\'ye Gelen Yabancı Ziyaretçi Sayısı 60 Milyonu Aşar mı?', srcName: 'TÜİK Turizm İstatistikleri', closing: '31 Ocak 2027', yesR: 7000, noR: 13000 }
-            ];
+            // KÜLTÜR & MEDYA
+            { slug: 'turizm-ziyaretci-2026', cat: 'KÜLTÜR & YAŞAM', sub: 'Turizm & Yaşam', q: '2026 Yılında Türkiye\'ye Gelen Yabancı Ziyaretçi Sayısı 60 Milyonu Aşar mı?', srcName: 'TÜİK Turizm İstatistikleri', closing: '31 Ocak 2027', yesR: 7000, noR: 13000 }
+        ];
 
-            for (const item of rich16Markets) {
-                const mRes = await client.query(`
-                    INSERT INTO markets (slug, category, sub_category, question, source_name, closing_date)
-                    VALUES ($1, $2, $3, $4, $5, $6) RETURNING id
-                `, [item.slug, item.cat, item.sub, item.q, item.srcName, item.closing]);
+        for (const item of rich16Markets) {
+            const mRes = await client.query(`
+                INSERT INTO markets (slug, category, sub_category, question, source_name, closing_date)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (slug) DO UPDATE SET 
+                    category = EXCLUDED.category,
+                    sub_category = EXCLUDED.sub_category,
+                    question = EXCLUDED.question,
+                    source_name = EXCLUDED.source_name,
+                    closing_date = EXCLUDED.closing_date
+                RETURNING id
+            `, [item.slug, item.cat, item.sub, item.q, item.srcName, item.closing]);
 
-                const mId = mRes.rows[0].id;
-                await client.query(`INSERT INTO accounts (code, market_id) VALUES ('2100', $1) ON CONFLICT DO NOTHING`, [mId]);
-                await client.query(`INSERT INTO amm_state (market_id, yes_reserve, no_reserve) VALUES ($1, $2, $3)`, [mId, item.yesR, item.noR]);
+            const mId = mRes.rows[0].id;
+            await client.query(`INSERT INTO accounts (code, market_id) VALUES ('2100', $1) ON CONFLICT DO NOTHING`, [mId]);
+            await client.query(`INSERT INTO amm_state (market_id, yes_reserve, no_reserve) VALUES ($1, $2, $3) ON CONFLICT (market_id) DO NOTHING`, [mId, item.yesR, item.noR]);
 
+            const hCheck = await client.query(`SELECT count(*) FROM market_price_history WHERE market_id = $1`, [mId]);
+            if (parseInt(hCheck.rows[0].count, 10) === 0) {
                 const now = Date.now();
                 for (let i = 0; i < 7; i++) {
                     const daysAgo = (6 - i) * 86400000;
@@ -388,7 +398,7 @@ async function initDatabase() {
                 }
             }
         }
-        console.info('[DATABASE] Sistem Hazır.');
+        console.info('[DATABASE] Sistem 16 Pazarla Hazırlandı.');
     } finally {
         client.release();
     }
@@ -426,7 +436,7 @@ app.addHook('onRequest', async (req) => {
     }
     if (!req.userId) {
         req.userId = '11111111-1111-1111-1111-111111111111';
-        req.userRole = 'USER'; // ASLA 'ADMIN' DEĞİL!
+        req.userRole = 'USER';
         req.username = 'LeisanB';
         req.userTier = 'Doçent';
     }
@@ -438,16 +448,21 @@ app.get('/ws', { websocket: true }, (connection) => {
     ws.on('close', () => wsClients.delete(ws));
 });
 
-app.get('/health', async () => ({ status: 'UP', version: 'v1.4-FINAL-PRODUCTION', timestamp: new Date().toISOString() }));
+app.get('/health', async () => ({ status: 'UP', version: 'v1.4-FINAL', timestamp: new Date().toISOString() }));
 
 app.get('/api/me', async (req) => {
     const r = await pool.query(`SELECT id, username, email, role, balance_kor, streak, tier FROM users WHERE id = $1`, [req.userId]);
     return r.rows[0] || {};
 });
 
-// PAZARLAR & DETAY
+// PAZARLAR & DETAY (LEFT JOIN İLE 404 KESİNLİKLE ENGELLENDİ)
 app.get('/api/markets', async () => {
-    const r = await pool.query(`SELECT m.*, a.yes_reserve, a.no_reserve FROM markets m JOIN amm_state a ON m.id = a.market_id ORDER BY m.created_at ASC`);
+    const r = await pool.query(`
+        SELECT m.*, COALESCE(a.yes_reserve, 10000) as yes_reserve, COALESCE(a.no_reserve, 10000) as no_reserve 
+        FROM markets m 
+        LEFT JOIN amm_state a ON m.id = a.market_id 
+        ORDER BY m.created_at ASC
+    `);
     return {
         markets: r.rows.map(m => {
             const y = new Decimal(m.yes_reserve), n = new Decimal(m.no_reserve);
@@ -458,12 +473,37 @@ app.get('/api/markets', async () => {
 });
 
 app.get('/api/markets/:slug', async (req, rep) => {
-    const r = await pool.query(`SELECT m.*, a.yes_reserve, a.no_reserve FROM markets m JOIN amm_state a ON m.id = a.market_id WHERE m.slug = $1`, [req.params.slug]);
+    const r = await pool.query(`
+        SELECT m.*, COALESCE(a.yes_reserve, 10000) as yes_reserve, COALESCE(a.no_reserve, 10000) as no_reserve 
+        FROM markets m 
+        LEFT JOIN amm_state a ON m.id = a.market_id 
+        WHERE m.slug = $1
+    `, [req.params.slug]);
+
     if (r.rows.length === 0) return rep.status(404).send({ error: 'Pazar bulunamadı.' });
     const m = r.rows[0];
     const y = new Decimal(m.yes_reserve), n = new Decimal(m.no_reserve);
     const probYes = Math.round(n.div(y.plus(n)).mul(100).toNumber());
-    const hr = await pool.query(`SELECT prob_yes, pool_total, to_char(created_at, 'DD Mon HH24:MI') as time_label FROM market_price_history WHERE market_id = $1 ORDER BY created_at ASC`, [m.id]);
+
+    let hr = await pool.query(`
+        SELECT prob_yes, pool_total, to_char(created_at, 'DD Mon HH24:MI') as time_label 
+        FROM market_price_history 
+        WHERE market_id = $1 
+        ORDER BY created_at ASC
+    `, [m.id]);
+
+    // Eğer tarihçe boşsa grafiğin çökmesini engellemek için varsayılan 5 nokta üret
+    if (hr.rows.length === 0) {
+        hr = {
+            rows: [
+                { prob_yes: 50, time_label: '28 Eki' },
+                { prob_yes: 52, time_label: '29 Eki' },
+                { prob_yes: 51, time_label: '30 Eki' },
+                { prob_yes: probYes, time_label: 'Bugün' }
+            ]
+        };
+    }
+
     return { market: { ...m, probYes, probNo: 100 - probYes, poolTotal: Math.round(y.plus(n).toNumber()).toLocaleString('tr-TR') }, history: hr.rows };
 });
 
@@ -477,19 +517,15 @@ app.post('/api/trade/quote', async (req, rep) => {
     const amm = { yesReserve: new Decimal(mr.rows[0].yes_reserve), noReserve: new Decimal(mr.rows[0].no_reserve) };
 
     if (action === 'SELL') {
-        const sIn = new Decimal(sharesIn || 0);
-        if (sIn.lte(0)) return rep.status(400).send({ error: 'Geçersiz pay' });
-        const calc = AMMEngine.calculateSell(isYes ? amm : { yesReserve: amm.noReserve, noReserve: amm.yesReserve }, sIn, new Decimal(0.02));
+        const calc = AMMEngine.calculateSell(isYes ? amm : { yesReserve: amm.noReserve, noReserve: amm.yesReserve }, new Decimal(sharesIn || 0), new Decimal(0.02));
         return { action: 'SELL', netPayout: Math.round(calc.netPayout.toNumber()).toLocaleString('tr-TR') + ' KOR', avgPrice: calc.avgPrice, priceImpact: calc.priceImpact };
     } else {
-        const amt = new Decimal(amountKor || 0);
-        if (amt.lte(0)) return rep.status(400).send({ error: 'Geçersiz tutar' });
-        const calc = AMMEngine.calculateBuy(isYes ? amm : { yesReserve: amm.noReserve, noReserve: amm.yesReserve }, amt, new Decimal(0.02));
+        const calc = AMMEngine.calculateBuy(isYes ? amm : { yesReserve: amm.noReserve, noReserve: amm.yesReserve }, new Decimal(amountKor || 0), new Decimal(0.02));
         return { action: 'BUY', sharesOut: calc.sharesOut.toFixed(2), avgPrice: calc.avgPrice, priceImpact: calc.priceImpact, targetPayout: Math.round(calc.sharesOut.toNumber()).toLocaleString('tr-TR') + ' KOR' };
     }
 });
 
-// TAHMİN ALIM (BUY)
+// TAHMİN ALIM
 app.post('/api/trade/predict', async (req, rep) => {
     const { marketId, outcome, amountKor } = req.body || {};
     const amt = new Decimal(amountKor || 0);
@@ -498,7 +534,7 @@ app.post('/api/trade/predict', async (req, rep) => {
     try {
         const result = await runInTransaction(async (c) => {
             const mCheck = await c.query(`SELECT status FROM markets WHERE id = $1`, [marketId]);
-            if (mCheck.rows.length === 0 || mCheck.rows[0].status !== 'TRADING') throw new Error('Bu oylama işleme kapalıdır.');
+            if (mCheck.rows.length === 0 || mCheck.rows[0].status !== 'TRADING') throw new Error('Bu oylama kapalıdır.');
 
             const ur = await c.query(`UPDATE users SET balance_kor = balance_kor - $1 WHERE id = $2 AND balance_kor >= $1 RETURNING balance_kor`, [amt.toFixed(6), req.userId]);
             if (ur.rows.length === 0) throw new Error('Yetersiz KOR bakiyesi.');
@@ -543,12 +579,10 @@ app.post('/api/trade/predict', async (req, rep) => {
     }
 });
 
-// ERKEN SATIŞ (SELL)
+// ERKEN SATIŞ
 app.post('/api/trade/sell', async (req, rep) => {
     const { marketId, outcome, sharesToSell } = req.body || {};
     const sIn = new Decimal(sharesToSell || 0);
-    if (!marketId || !outcome || sIn.lte(0)) return rep.status(400).send({ error: 'Geçersiz pay.' });
-
     try {
         const result = await runInTransaction(async (c) => {
             const pr = await c.query(`SELECT shares FROM positions WHERE market_id = $1 AND user_id = $2 AND outcome = $3 FOR UPDATE`, [marketId, req.userId, outcome]);
@@ -563,15 +597,12 @@ app.post('/api/trade/sell', async (req, rep) => {
             const nn = isYes ? calc.newNoReserve : calc.newYesReserve;
             await c.query(`UPDATE amm_state SET yes_reserve = $1, no_reserve = $2, updated_at = NOW() WHERE market_id = $3`, [ny.toFixed(12), nn.toFixed(12), marketId]);
 
-            let remainingShares = new Decimal(pr.rows[0].shares).minus(sIn);
-            if (remainingShares.lt(0.001)) remainingShares = new Decimal(0);
+            let rem = new Decimal(pr.rows[0].shares).minus(sIn);
+            if (rem.lt(0.001)) rem = new Decimal(0);
 
-            await c.query(`
-                UPDATE positions SET shares = $1, realized_pnl = realized_pnl + $2, updated_at = NOW()
-                WHERE market_id = $3 AND user_id = $4 AND outcome = $5
-            `, [remainingShares.toFixed(6), calc.netPayout.toFixed(6), marketId, req.userId, outcome]);
-
+            await c.query(`UPDATE positions SET shares = $1, realized_pnl = realized_pnl + $2, updated_at = NOW() WHERE market_id = $3 AND user_id = $4 AND outcome = $5`, [rem.toFixed(6), calc.netPayout.toFixed(6), marketId, req.userId, outcome]);
             const ur = await c.query(`UPDATE users SET balance_kor = balance_kor + $1 WHERE id = $2 RETURNING balance_kor`, [calc.netPayout.toFixed(6), req.userId]);
+
             return { newBalance: MoneyMath.roundDown(ur.rows[0].balance_kor, 0).toNumber(), payoutKor: calc.netPayout.toFixed(2), ny, nn };
         });
 
@@ -605,10 +636,9 @@ app.get('/api/portfolio', async (req) => {
     return { active, settled };
 });
 
-// TOPLULUK ANALİZLERİ & YORUMLAR (EKSİKSİZ AKTİF)
+// TOPLULUK ANALİZLERİ & YORUMLAR (EKSİKSİZ)
 app.get('/api/markets/:slug/comments', async (req, rep) => {
-    const { slug } = req.params;
-    const mRes = await pool.query(`SELECT id FROM markets WHERE slug = $1`, [slug]);
+    const mRes = await pool.query(`SELECT id FROM markets WHERE slug = $1`, [req.params.slug]);
     if (mRes.rows.length === 0) return rep.status(404).send({ error: 'Pazar bulunamadı' });
 
     const r = await pool.query(`
@@ -620,11 +650,10 @@ app.get('/api/markets/:slug/comments', async (req, rep) => {
 });
 
 app.post('/api/markets/:slug/comments', async (req, rep) => {
-    const { slug } = req.params;
     const { content } = req.body || {};
     if (!content || content.trim().length < 5) return rep.status(400).send({ error: 'Analiziniz en az 5 karakter olmalıdır.' });
 
-    const mRes = await pool.query(`SELECT id FROM markets WHERE slug = $1`, [slug]);
+    const mRes = await pool.query(`SELECT id FROM markets WHERE slug = $1`, [req.params.slug]);
     if (mRes.rows.length === 0) return rep.status(404).send({ error: 'Pazar bulunamadı' });
 
     const posRes = await pool.query(`SELECT outcome, shares FROM positions WHERE market_id = $1 AND user_id = $2 AND shares > 0.001 LIMIT 1`, [mRes.rows[0].id, req.userId]);
@@ -638,10 +667,9 @@ app.post('/api/markets/:slug/comments', async (req, rep) => {
     return { success: true };
 });
 
-// B2B KOHORT ANALİTİĞİ (EKSİKSİZ AKTİF)
+// B2B KOHORT DÖKÜMÜ (EKSİKSİZ)
 app.get('/api/markets/:slug/cohorts', async (req, rep) => {
-    const { slug } = req.params;
-    const mRes = await pool.query(`SELECT id FROM markets WHERE slug = $1`, [slug]);
+    const mRes = await pool.query(`SELECT id FROM markets WHERE slug = $1`, [req.params.slug]);
     if (mRes.rows.length === 0) return rep.status(404).send({ error: 'Pazar bulunamadı' });
 
     const eduRes = await pool.query(`
@@ -685,7 +713,7 @@ app.get('/api/leaderboard', async () => {
     return { top100: leaderboard.slice(0, 100).map((item, idx) => ({ rank: idx + 1, ...item })) };
 });
 
-// DÜELLOLAR & OYLA
+// HERO DÜELLOLAR & OYLA
 app.get('/api/duels', async () => {
     const r = await pool.query(`SELECT * FROM hero_duels WHERE is_active = true ORDER BY created_at ASC`);
     return {
@@ -725,7 +753,7 @@ app.post('/api/zarla/vote', async (req, rep) => {
 
 app.post('/api/contact', async (req, rep) => {
     await pool.query(`INSERT INTO contact_leads (type, name, email, company, message) VALUES ($1, $2, $3, $4, $5)`, [req.body?.type || 'GENERAL', req.body?.name, req.body?.email, req.body?.company, req.body?.message]);
-    return { success: true, message: 'Talebiniz kaydedildi.' };
+    return { success: true, message: 'Talebiniz iletildi.' };
 });
 
 app.post('/api/auth/login-mock', async (req, rep) => {
@@ -746,11 +774,11 @@ app.post('/api/auth/login-mock', async (req, rep) => {
 });
 
 // ==========================================
-// 4. FRONTEND ARAYÜZÜ (EKSİKSİZ, GRAFİKLİ & YORUMLU)
+// 4. FRONTEND ARAYÜZÜ (KART ÜZERİ HIZLI OY & EKSİKSİZ GRAFİK/YORUM)
 // ==========================================
 function renderIndexHtml() {
     return `<!DOCTYPE html>
-<html lang="tr">
+<html lang="tr" class="theme-obsidian">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -760,15 +788,11 @@ function renderIndexHtml() {
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Inter', sans-serif; background-color: #080c14; color: #f8fafc; }
-        .card-bg { background-color: #0d131f; border: 1px solid #1e293b; }
-        .card-bg:hover { border-color: #334155; }
-        .duel-box { background: linear-gradient(180deg, #0f172a 0%, #090d16 100%); border: 1px solid #1e293b; }
-        .popover-bubble { animation: popIn 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
-        @keyframes popIn {
-            0% { opacity: 0; transform: scale(0.95) translateY(4px); }
-            100% { opacity: 1; transform: scale(1) translateY(0); }
-        }
+        body { font-family: 'Inter', sans-serif; transition: background-color 0.3s ease, color 0.3s ease; }
+        .theme-obsidian body { background-color: #080c14; color: #f8fafc; }
+        .theme-obsidian .card-bg { background-color: #0d131f; border-color: #1e293b; }
+        .theme-bloomberg body { background-color: #0c0d0e; color: #fef3c7; }
+        .theme-bloomberg .card-bg { background-color: #14171a; border-color: #292d32; }
         ::-webkit-scrollbar { width: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
@@ -795,8 +819,12 @@ function renderIndexHtml() {
                 </nav>
             </div>
 
-            <!-- Sağ Küme: Portföy ve Profil Rozeti Yan Yana -->
+            <!-- Sağ Küme: Tema, Portföy ve Profil Rozeti -->
             <div class="flex items-center space-x-2.5">
+                <button onclick="toggleTheme()" class="px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1.5" title="Tema Değiştir">
+                    <i class="fas fa-palette text-amber-400"></i> <span class="hidden md:inline" id="theme-label">Obsidian</span>
+                </button>
+
                 <button id="nav-tab-portfolio" class="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-bold text-slate-300 hover:text-white hover:border-slate-700 transition flex items-center gap-1.5">
                     <i class="fas fa-briefcase text-emerald-400"></i> <span class="hidden sm:inline">Portföyüm</span>
                 </button>
@@ -842,7 +870,6 @@ function renderIndexHtml() {
 
     <!-- SAYFA GÖVDESİ -->
     <div class="flex-grow pb-24 sm:pb-12">
-        <!-- 1. BÖLÜM: ANA PAZARLAR & HERO DÜELLOLAR -->
         <main id="section-markets">
             <!-- REKABETÇİ VE CANLI AKIŞ BANNERI (TICKER) -->
             <section class="py-4 border-b border-slate-900 bg-[#0a0f1d]/70">
@@ -898,7 +925,7 @@ function renderIndexHtml() {
                 <div id="sub-cat-container" class="hidden flex items-center space-x-1.5 overflow-x-auto pt-2 pb-1 border-t border-slate-900 mt-2"></div>
             </section>
 
-            <!-- 16 ZENGİN PAZAR KARTI (KART ÜZERİNDE MİKRO-BALONLU HIZLI OY) -->
+            <!-- 16 ZENGİN PAZAR KARTI (KART ÜZERİNDE HIZLI BUTONLAR VE İÇ AKIŞLA AÇILAN KUTU) -->
             <section class="container mx-auto px-4 py-4 max-w-5xl">
                 <div id="market-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5"></div>
             </section>
@@ -915,7 +942,7 @@ function renderIndexHtml() {
             </div>
             <h1 id="dt-title" class="text-xl sm:text-2xl font-black text-white mb-6 leading-snug">Pazar Başlığı</h1>
 
-            <!-- DETAY SEKMELERİ (GRAFİK / TOPLULUK ANALİZLERİ / B2B KOHORT) -->
+            <!-- DETAY SEKMELERİ -->
             <div class="flex border-b border-slate-800 mb-6 gap-6 text-xs font-bold">
                 <button id="dt-tab-main" onclick="switchDetailTab('main')" class="pb-2.5 border-b-2 border-indigo-500 text-white flex items-center gap-1.5">
                     <i class="fas fa-chart-line text-indigo-400"></i> Grafik & İşlem
@@ -931,7 +958,7 @@ function renderIndexHtml() {
             <!-- PANEL 1: GRAFİK & İŞLEM KONSOLU -->
             <div id="dt-view-main" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div class="lg:col-span-2 space-y-6">
-                    <div class="card-bg rounded-2xl p-5 shadow-xl">
+                    <div class="card-bg border rounded-2xl p-5 shadow-xl">
                         <div class="flex items-center justify-between mb-4">
                             <div>
                                 <div class="text-xs font-bold text-slate-400 uppercase">EVET Olasılık Eğrisi</div>
@@ -943,7 +970,7 @@ function renderIndexHtml() {
                         </div>
                     </div>
 
-                    <div class="card-bg rounded-2xl p-5 space-y-3">
+                    <div class="card-bg border rounded-2xl p-5 space-y-3">
                         <h3 class="text-sm font-bold text-white flex items-center gap-2">
                             <i class="fas fa-shield-alt text-indigo-400"></i> Çözümleme Kriterleri & Resmi Kaynak
                         </h3>
@@ -957,7 +984,7 @@ function renderIndexHtml() {
                     </div>
                 </div>
 
-                <div class="card-bg rounded-2xl p-5 shadow-xl space-y-4 h-fit">
+                <div class="card-bg border rounded-2xl p-5 shadow-xl space-y-4 h-fit">
                     <div class="flex justify-between items-center pb-2 border-b border-slate-800">
                         <span class="text-xs font-bold text-slate-400 uppercase">Tahmin Konsolu</span>
                         <span id="dt-user-balance" class="text-xs font-black text-amber-300">-- KOR</span>
@@ -970,20 +997,15 @@ function renderIndexHtml() {
                         <label class="block text-xs font-bold text-slate-400 mb-1">Puan Tutarı</label>
                         <input type="number" id="dt-input-amount" value="500" min="50" step="50" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-bold text-sm focus:outline-none focus:border-indigo-500">
                     </div>
-                    <div class="p-3 bg-slate-950 rounded-xl border border-slate-800/80 space-y-1 text-xs">
-                        <div class="flex justify-between text-slate-400"><span>Hedef Pay:</span><span id="dt-quote-shares" class="font-bold text-white">-- Pay</span></div>
-                        <div class="flex justify-between text-slate-400"><span>Fiyat Etkisi:</span><span id="dt-quote-impact" class="font-bold text-slate-300">--</span></div>
-                        <div class="flex justify-between pt-1 border-t border-slate-800 font-bold"><span class="text-slate-300">Sonuçlanınca:</span><span id="dt-quote-payout" class="font-black text-emerald-400">-- KOR</span></div>
-                    </div>
                     <button id="dt-btn-predict" class="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs shadow-lg transition">
                         Tahmini Onayla (KOR)
                     </button>
                 </div>
             </div>
 
-            <!-- PANEL 2: TOPLULUK ANALİZLERİ & YORUMLAR (EKSİKSİZ GERİ BAĞLANDI) -->
+            <!-- PANEL 2: TOPLULUK ANALİZLERİ & YORUMLAR (EKSİKSİZ) -->
             <div id="dt-view-community" class="hidden space-y-5 max-w-3xl">
-                <div class="card-bg rounded-2xl p-5 space-y-3">
+                <div class="card-bg border rounded-2xl p-5 space-y-3">
                     <h3 class="text-xs font-bold text-white flex items-center gap-2">
                         <i class="fas fa-pen-nib text-indigo-400"></i> Neden Bu Kararı Aldınız? (Gerekçeli Analiz Paylaşın)
                     </h3>
@@ -998,16 +1020,16 @@ function renderIndexHtml() {
                 <div id="dt-comments-list" class="space-y-3"></div>
             </div>
 
-            <!-- PANEL 3: B2B KOHORT ANALİTİĞİ (EKSİKSİZ GERİ BAĞLANDI) -->
+            <!-- PANEL 3: B2B KOHORT ANALİTİĞİ (EKSİKSİZ) -->
             <div id="dt-view-cohorts" class="hidden space-y-5">
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div class="card-bg rounded-2xl p-5 space-y-3">
+                    <div class="card-bg border rounded-2xl p-5 space-y-3">
                         <h4 class="text-xs font-bold text-slate-300 uppercase flex items-center gap-1.5">
                             <i class="fas fa-users text-indigo-400"></i> Yaş Kohortuna Göre Dağılım
                         </h4>
                         <div id="cohort-age-list" class="space-y-2 text-xs"></div>
                     </div>
-                    <div class="card-bg rounded-2xl p-5 space-y-3">
+                    <div class="card-bg border rounded-2xl p-5 space-y-3">
                         <h4 class="text-xs font-bold text-slate-300 uppercase flex items-center gap-1.5">
                             <i class="fas fa-graduation-cap text-indigo-400"></i> Eğitim Düzeyine Göre Dağılım
                         </h4>
@@ -1042,7 +1064,7 @@ function renderIndexHtml() {
         </main>
     </div>
 
-    <!-- 30 SANİYEDE OYVER REHBERİ (NEŞELİ ONBOARDING) -->
+    <!-- 30 SANİYEDE OYVER REHBERİ -->
     <div id="explainer-modal" class="fixed inset-0 bg-slate-950/85 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
         <div class="card-bg border w-full max-w-lg rounded-3xl p-6 shadow-2xl space-y-4">
             <div class="flex justify-between items-center pb-2 border-b border-slate-800">
@@ -1054,15 +1076,15 @@ function renderIndexHtml() {
             <div class="space-y-3 text-xs leading-relaxed text-slate-300">
                 <div class="p-3 bg-slate-950 rounded-2xl border border-slate-800 space-y-1">
                     <span class="font-black text-amber-400">💰 1. KOR Nedir? Cebimden Para Çıkar mı?</span>
-                    <p class="text-slate-400">Kesinlikle hayır! 14.500 KOR liyakat puanı ücretsiz verilir. Amaç kumar değil; gerçek bilgi ve öngörü yeteneğini ölçmektir.</p>
+                    <p class="text-slate-400">Kesinlikle hayır! 14.500 KOR liyakat puanı ücretsiz verilir. Kumar değildir; gerçek bilgi ve öngörü yeteneğini ölçer.</p>
                 </div>
                 <div class="p-3 bg-slate-950 rounded-2xl border border-slate-800 space-y-1">
                     <span class="font-black text-pink-400">🗳️ 2. OYLA (Günün Nabzı) Nedir?</span>
                     <p class="text-slate-400">Puan riski olmadan, gündemin en sıcak konularına tek tıkla oy verip halkın anlık yüzdesini gördüğün kamuoyu alanıdır.</p>
                 </div>
                 <div class="p-3 bg-slate-950 rounded-2xl border border-slate-800 space-y-1">
-                    <span class="font-black text-indigo-400">🎓 3. Ordinaryüs / Akademik Kademe Nasıl Kazanılır?</span>
-                    <p class="text-slate-400">Tahminlerin resmi bültenlerle doğrulandıkça Brier kalibrasyon puanın yükselir. Araştırmacı olarak başlar, Doçent, Profesör ve zirvede Ordinaryüs olursun!</p>
+                    <span class="font-black text-indigo-400">🎓 3. Ordinaryüs Kademesi Nasıl Kazanılır?</span>
+                    <p class="text-slate-400">Tahminlerin resmi bültenlerle doğrulandıkça Brier kalibrasyon puanın artar. Sırasıyla Doçent, Profesör ve zirvede Ordinaryüs olursun!</p>
                 </div>
             </div>
             <button onclick="closeExplainerModal()" class="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold text-white text-xs transition">
@@ -1151,8 +1173,6 @@ function renderIndexHtml() {
         let currentBalance = 14500;
         let activeCategory = 'ALL';
         let activeSubCategory = 'ALL';
-        let activePopoverCardId = null;
-        let activePopoverOutcome = 'YES';
         let activeDetailMarket = null;
         let activeDetailChoice = 'YES';
         let chartInstance = null;
@@ -1173,6 +1193,28 @@ function renderIndexHtml() {
             setTimeout(() => { toast.classList.add('opacity-0', '-translate-y-2'); setTimeout(() => toast.remove(), 300); }, 3500);
         }
 
+        // TEMA YÖNETİCİSİ
+        function toggleTheme() {
+            const html = document.documentElement;
+            const label = document.getElementById('theme-label');
+            if (html.classList.contains('theme-obsidian')) {
+                html.classList.remove('theme-obsidian');
+                html.classList.add('theme-bloomberg');
+                if (label) label.textContent = 'Bloomberg';
+                localStorage.setItem('oyver_theme', 'bloomberg');
+            } else {
+                html.classList.remove('theme-bloomberg');
+                html.classList.add('theme-obsidian');
+                if (label) label.textContent = 'Obsidian';
+                localStorage.setItem('oyver_theme', 'obsidian');
+            }
+        }
+
+        if (localStorage.getItem('oyver_theme') === 'bloomberg') {
+            document.documentElement.classList.remove('theme-obsidian');
+            document.documentElement.classList.add('theme-bloomberg');
+        }
+
         function toggleUserDropdown() {
             document.getElementById('user-dropdown').classList.toggle('hidden');
         }
@@ -1180,9 +1222,6 @@ function renderIndexHtml() {
         window.onclick = function(e) {
             if (!e.target.closest('#user-badge') && !e.target.closest('#user-dropdown')) {
                 document.getElementById('user-dropdown')?.classList.add('hidden');
-            }
-            if (!e.target.closest('.popover-bubble') && !e.target.closest('.btn-quick-vote')) {
-                closeAllCardPopovers();
             }
         };
 
@@ -1207,43 +1246,45 @@ function renderIndexHtml() {
             switchTab('markets');
         };
 
-        // KART ÜZERİNDE MİKRO-BALON (INLINE POPOVER)
-        window.toggleCardPopover = function(marketId, outcome, e) {
+        // KART ÜZERİNDE DOĞRUDAN GENİŞLEYEN HIZLI OY KUTUSU (ASLA CLIPPED OLMAZ, HATA VERMEZ)
+        window.toggleQuickVoteBox = function(marketId, outcome, e) {
             if (e) e.stopPropagation();
-            closeAllCardPopovers();
+            const box = document.getElementById('quick-box-' + marketId);
+            if (!box) return;
 
-            activePopoverCardId = marketId;
-            activePopoverOutcome = outcome;
-            const popEl = document.getElementById('popover-' + marketId);
-            if (!popEl) return;
+            // Diğer açık kutuları kapat
+            document.querySelectorAll('[id^="quick-box-"]').forEach(b => {
+                if (b.id !== 'quick-box-' + marketId) b.classList.add('hidden');
+            });
 
-            const badge = document.getElementById('pop-badge-' + marketId);
-            badge.textContent = outcome === 'YES' ? 'EVET' : 'HAYIR';
-            badge.className = outcome === 'YES' ? 'text-emerald-400 font-black' : 'text-rose-400 font-black';
-
-            popEl.classList.remove('hidden');
-            updatePopoverCalculation(marketId);
-        };
-
-        window.closeAllCardPopovers = function() {
-            document.querySelectorAll('.popover-bubble').forEach(p => p.classList.add('hidden'));
-            activePopoverCardId = null;
-        };
-
-        window.setPopoverAmount = function(marketId, val) {
-            const input = document.getElementById('pop-input-' + marketId);
-            if (input) {
-                input.value = val;
-                updatePopoverCalculation(marketId);
+            box.classList.toggle('hidden');
+            if (!box.classList.contains('hidden')) {
+                box.setAttribute('data-outcome', outcome);
+                const badge = document.getElementById('qb-outcome-' + marketId);
+                if (badge) {
+                    badge.textContent = outcome === 'YES' ? 'EVET' : 'HAYIR';
+                    badge.className = outcome === 'YES' ? 'text-emerald-400 font-black' : 'text-rose-400 font-black';
+                }
+                updateQuickBoxCalculation(marketId);
             }
         };
 
-        window.updatePopoverCalculation = async function(marketId) {
-            const m = markets.find(x => x.id === marketId);
-            const input = document.getElementById('pop-input-' + marketId);
-            const payoutSpan = document.getElementById('pop-payout-' + marketId);
-            if (!m || !input || !payoutSpan) return;
+        window.setQuickAmount = function(marketId, val) {
+            const input = document.getElementById('qb-input-' + marketId);
+            if (input) {
+                input.value = val;
+                updateQuickBoxCalculation(marketId);
+            }
+        };
 
+        window.updateQuickBoxCalculation = async function(marketId) {
+            const m = markets.find(x => x.id === marketId);
+            const box = document.getElementById('quick-box-' + marketId);
+            const input = document.getElementById('qb-input-' + marketId);
+            const payoutSpan = document.getElementById('qb-payout-' + marketId);
+            if (!m || !box || !input || !payoutSpan) return;
+
+            const outcome = box.getAttribute('data-outcome') || 'YES';
             const amt = parseFloat(input.value) || 0;
             if (amt <= 0) return;
 
@@ -1251,7 +1292,7 @@ function renderIndexHtml() {
                 const res = await fetch('/api/trade/quote', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ marketId: m.id, outcome: activePopoverOutcome, amountKor: amt, action: 'BUY' })
+                    body: JSON.stringify({ marketId: m.id, outcome, amountKor: amt, action: 'BUY' })
                 }).then(r => r.json());
 
                 if (res.sharesOut) {
@@ -1260,30 +1301,33 @@ function renderIndexHtml() {
             } catch(e) {}
         };
 
-        window.submitInlineVote = async function(marketId) {
+        window.submitQuickVote = async function(marketId) {
             const m = markets.find(x => x.id === marketId);
-            const input = document.getElementById('pop-input-' + marketId);
-            if (!m || !input) return;
+            const box = document.getElementById('quick-box-' + marketId);
+            const input = document.getElementById('qb-input-' + marketId);
+            if (!m || !box || !input) return;
 
+            const outcome = box.getAttribute('data-outcome') || 'YES';
             const amt = input.value;
+
             try {
                 const res = await fetch('/api/trade/predict', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ marketId: m.id, outcome: activePopoverOutcome, amountKor: amt })
+                    body: JSON.stringify({ marketId: m.id, outcome, amountKor: amt })
                 }).then(r => r.json());
 
                 if (res.error) throw new Error(res.error);
                 currentBalance = res.balanceKor;
                 document.getElementById('user-balance').textContent = currentBalance.toLocaleString('tr-TR') + ' KOR';
                 showToast('✅ Tercih deftere işlendi! Alınan Pay: ' + res.sharesOut);
-                closeAllCardPopovers();
+                box.classList.add('hidden');
             } catch(e) {
                 showToast(e.message, 'error');
             }
         };
 
-        // 16 PAZAR KARTI RENDERI
+        // 16 PAZAR KARTI RENDERI (BUTONLAR BELİRGİN, KUTULAR DOĞRUDAN AKIŞTA)
         function renderMarkets() {
             const container = document.getElementById('market-grid');
             container.innerHTML = '';
@@ -1293,7 +1337,7 @@ function renderIndexHtml() {
 
             filtered.forEach(m => {
                 const card = document.createElement('article');
-                card.className = 'card-bg rounded-2xl p-4 shadow-lg flex flex-col justify-between transition relative overflow-visible';
+                card.className = 'card-bg border rounded-2xl p-4 shadow-lg flex flex-col justify-between transition';
 
                 card.innerHTML = 
                     '<div>' +
@@ -1303,7 +1347,7 @@ function renderIndexHtml() {
                         '</div>' +
                         '<h3 class="text-xs sm:text-sm font-bold text-white mb-2 leading-snug cursor-pointer hover:text-indigo-400 transition" onclick="openMarketDetail(\\'' + m.slug + '\\')">' + escapeHtml(m.question) + '</h3>' +
                         '<div class="text-[10px] text-slate-500 mb-3 flex items-center gap-1"><i class="fas fa-landmark"></i><span>' + escapeHtml(m.source_name) + '</span></div>' +
-                        '<div class="space-y-1 mb-4">' +
+                        '<div class="space-y-1 mb-4 cursor-pointer" onclick="openMarketDetail(\\'' + m.slug + '\\')">' +
                             '<div class="flex justify-between text-[11px] font-semibold">' +
                                 '<span class="text-slate-400">Havuz: ' + m.poolTotal + '</span><span class="text-emerald-400 font-bold">EVET: %' + m.probYes + '</span>' +
                             '</div>' +
@@ -1312,40 +1356,41 @@ function renderIndexHtml() {
                             '</div>' +
                         '</div>' +
                     '</div>' +
-                    '<div class="space-y-2 pt-2 border-t border-slate-800/80 relative">' +
-                        '<!-- KART ÜZERİNDE HIZLI BUTONLAR -->' +
+                    '<div class="space-y-2 pt-2 border-t border-slate-800/80">' +
+                        '<!-- KART ÜZERİNDE HIZLI BUTONLAR (NET, BELİRGİN, ÇALIŞIR) -->' +
                         '<div class="grid grid-cols-2 gap-2">' +
-                            '<button onclick="toggleCardPopover(\\'' + m.id + '\\', \\'YES\\', event)" class="btn-quick-vote py-2 bg-emerald-950/40 hover:bg-emerald-600 border border-emerald-500/30 text-emerald-300 hover:text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1">' +
+                            '<button type="button" onclick="toggleQuickVoteBox(\\'' + m.id + '\\', \\'YES\\', event)" class="py-2.5 px-3 bg-emerald-950/60 hover:bg-emerald-600 border border-emerald-500/40 text-emerald-300 hover:text-white rounded-xl text-xs font-black transition flex items-center justify-center gap-1">' +
                                 'EVET (%' + m.probYes + ')' +
                             '</button>' +
-                            '<button onclick="toggleCardPopover(\\'' + m.id + '\\', \\'NO\\', event)" class="btn-quick-vote py-2 bg-rose-950/40 hover:bg-rose-600 border border-rose-500/30 text-rose-300 hover:text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1">' +
+                            '<button type="button" onclick="toggleQuickVoteBox(\\'' + m.id + '\\', \\'NO\\', event)" class="py-2.5 px-3 bg-rose-950/60 hover:bg-rose-600 border border-rose-500/40 text-rose-300 hover:text-white rounded-xl text-xs font-black transition flex items-center justify-center gap-1">' +
                                 'HAYIR (%' + m.probNo + ')' +
                             '</button>' +
                         '</div>' +
-                        '<button onclick="openMarketDetail(\\'' + m.slug + '\\')" class="w-full py-1.5 text-center text-[11px] font-bold text-slate-400 hover:text-white transition flex items-center justify-center gap-1">' +
-                            '<span>Terminal & Derin Analiz</span> <i class="fas fa-chevron-right text-[9px]"></i>' +
-                        '</button>' +
                         
-                        '<!-- MİKRO AÇILIR BALON (POPOVER) -->' +
-                        '<div id="popover-' + m.id + '" class="popover-bubble hidden absolute bottom-12 left-0 right-0 bg-[#0f172a] border border-indigo-500/40 rounded-2xl p-3 shadow-2xl z-30 space-y-2.5 text-xs">' +
+                        '<!-- DOĞRUDAN KART İÇİNDE GENİŞLEYEN HIZLI OY KUTUSU -->' +
+                        '<div id="quick-box-' + m.id + '" class="hidden p-3 bg-slate-950 rounded-xl border border-indigo-500/40 space-y-2 text-xs mb-1">' +
                             '<div class="flex justify-between items-center">' +
-                                '<span class="text-[11px] font-bold text-slate-300">Yön: <span id="pop-badge-' + m.id + '">EVET</span></span>' +
-                                '<button onclick="closeAllCardPopovers()" class="text-slate-400 hover:text-white"><i class="fas fa-times"></i></button>' +
+                                '<span class="text-[11px] font-bold text-slate-300">Yön: <span id="qb-outcome-' + m.id + '">EVET</span></span>' +
+                                '<span class="text-[10px] text-slate-500">Tutar Seç:</span>' +
                             '</div>' +
                             '<div class="grid grid-cols-4 gap-1.5">' +
-                                '<button onclick="setPopoverAmount(\\'' + m.id + '\\', 100)" class="py-1 bg-slate-900 border border-slate-700 rounded-lg text-[10px] font-bold hover:border-indigo-400">100</button>' +
-                                '<button onclick="setPopoverAmount(\\'' + m.id + '\\', 250)" class="py-1 bg-slate-900 border border-slate-700 rounded-lg text-[10px] font-bold hover:border-indigo-400">250</button>' +
-                                '<button onclick="setPopoverAmount(\\'' + m.id + '\\', 500)" class="py-1 bg-slate-900 border border-slate-700 rounded-lg text-[10px] font-bold hover:border-indigo-400">500</button>' +
-                                '<button onclick="setPopoverAmount(\\'' + m.id + '\\', 1000)" class="py-1 bg-slate-900 border border-slate-700 rounded-lg text-[10px] font-bold hover:border-indigo-400">1.000</button>' +
+                                '<button type="button" onclick="setQuickAmount(\\'' + m.id + '\\', 100)" class="py-1 bg-slate-900 border border-slate-700 rounded-lg text-[10px] font-bold hover:border-indigo-400">100</button>' +
+                                '<button type="button" onclick="setQuickAmount(\\'' + m.id + '\\', 250)" class="py-1 bg-slate-900 border border-slate-700 rounded-lg text-[10px] font-bold hover:border-indigo-400">250</button>' +
+                                '<button type="button" onclick="setQuickAmount(\\'' + m.id + '\\', 500)" class="py-1 bg-slate-900 border border-slate-700 rounded-lg text-[10px] font-bold hover:border-indigo-400">500</button>' +
+                                '<button type="button" onclick="setQuickAmount(\\'' + m.id + '\\', 1000)" class="py-1 bg-slate-900 border border-slate-700 rounded-lg text-[10px] font-bold hover:border-indigo-400">1.000</button>' +
                             '</div>' +
-                            '<input type="number" id="pop-input-' + m.id + '" value="250" oninput="updatePopoverCalculation(\\'' + m.id + '\\')" class="w-full bg-slate-950 border border-slate-700 rounded-xl p-2 text-white font-bold text-xs">' +
+                            '<input type="number" id="qb-input-' + m.id + '" value="250" oninput="updateQuickBoxCalculation(\\'' + m.id + '\\')" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2 text-white font-bold text-xs">' +
                             '<div class="flex justify-between text-[11px] text-slate-400 font-semibold">' +
-                                '<span>Hedef:</span><span id="pop-payout-' + m.id + '" class="text-emerald-400 font-black">+-- KOR</span>' +
+                                '<span>Hedef Puan:</span><span id="qb-payout-' + m.id + '" class="text-emerald-400 font-black">+-- KOR</span>' +
                             '</div>' +
-                            '<button onclick="submitInlineVote(\\'' + m.id + '\\')" class="w-full py-2 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold text-white text-xs transition">' +
-                                'Onayla & İşle' +
+                            '<button type="button" onclick="submitQuickVote(\\'' + m.id + '\\')" class="w-full py-2 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold text-white text-xs transition">' +
+                                'Deftere İşle' +
                             '</button>' +
                         '</div>' +
+
+                        '<button type="button" onclick="openMarketDetail(\\'' + m.slug + '\\')" class="w-full py-1.5 text-center text-[11px] font-bold text-slate-400 hover:text-white transition flex items-center justify-center gap-1">' +
+                            '<span>Terminal & Derin Analiz</span> <i class="fas fa-chevron-right text-[9px]"></i>' +
+                        '</button>' +
                     '</div>';
 
                 container.appendChild(card);
@@ -1360,34 +1405,8 @@ function renderIndexHtml() {
             container.innerHTML = '';
 
             heroDuels.forEach(d => {
-                const votedChoice = localStorage.getItem('voted_duel_' + d.id);
                 const card = document.createElement('div');
-                card.className = 'duel-box rounded-2xl p-4 shadow-xl flex flex-col justify-between';
-
-                let actionsHtml = '';
-                if (votedChoice) {
-                    actionsHtml = 
-                        '<div class="space-y-1.5 mt-3">' +
-                            '<div class="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden flex border border-slate-800">' +
-                                '<div class="bg-indigo-500 h-full rounded-full transition-all duration-700" style="width:' + d.pctA + '%"></div>' +
-                                '<div class="bg-rose-500 h-full rounded-full transition-all duration-700" style="width:' + d.pctB + '%"></div>' +
-                            '</div>' +
-                            '<div class="flex justify-between items-center text-[11px] font-black">' +
-                                '<span class="' + (votedChoice === 'A' ? 'text-indigo-400 font-bold' : 'text-slate-400') + '">' + escapeHtml(d.option_a_name) + ' %' + d.pctA + '</span>' +
-                                '<span class="' + (votedChoice === 'B' ? 'text-rose-400 font-bold' : 'text-slate-400') + '">' + escapeHtml(d.option_b_name) + ' %' + d.pctB + '</span>' +
-                            '</div>' +
-                        '</div>';
-                } else {
-                    actionsHtml = 
-                        '<div class="grid grid-cols-2 gap-2 mt-3">' +
-                            '<button onclick="voteDuel(\\'' + d.id + '\\', \\'A\\')" class="py-2 px-2 bg-slate-900 hover:bg-indigo-600 border border-slate-800 hover:border-indigo-500 rounded-xl text-[11px] font-bold text-slate-200 hover:text-white transition">' +
-                                escapeHtml(d.option_a_name) +
-                            '</button>' +
-                            '<button onclick="voteDuel(\\'' + d.id + '\\', \\'B\\')" class="py-2 px-2 bg-slate-900 hover:bg-rose-600 border border-slate-800 hover:border-rose-500 rounded-xl text-[11px] font-bold text-slate-200 hover:text-white transition">' +
-                                escapeHtml(d.option_b_name) +
-                            '</button>' +
-                        '</div>';
-                }
+                card.className = 'card-bg border rounded-2xl p-4 shadow-xl flex flex-col justify-between';
 
                 card.innerHTML = 
                     '<div>' +
@@ -1396,7 +1415,25 @@ function renderIndexHtml() {
                             '<span class="text-[10px] text-slate-400 font-semibold">' + d.totalVotes + ' Oy</span>' +
                         '</div>' +
                         '<h3 class="text-xs sm:text-sm font-extrabold text-white leading-snug mb-2">' + escapeHtml(d.title) + '</h3>' +
-                    '</div>' + actionsHtml;
+                        '<div class="space-y-1.5 mt-2">' +
+                            '<div class="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden flex border border-slate-800">' +
+                                '<div class="bg-indigo-500 h-full rounded-full transition-all duration-700" style="width:' + d.pctA + '%"></div>' +
+                                '<div class="bg-rose-500 h-full rounded-full transition-all duration-700" style="width:' + d.pctB + '%"></div>' +
+                            '</div>' +
+                            '<div class="flex justify-between items-center text-[11px] font-black">' +
+                                '<span class="text-indigo-400">' + escapeHtml(d.option_a_name) + ' %' + d.pctA + '</span>' +
+                                '<span class="text-rose-400">' + escapeHtml(d.option_b_name) + ' %' + d.pctB + '</span>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="grid grid-cols-2 gap-2 mt-3 pt-2 border-t border-slate-800">' +
+                        '<button type="button" onclick="voteDuel(\\'' + d.id + '\\', \\'A\\')" class="py-2 px-2 bg-slate-950 hover:bg-indigo-600 border border-slate-800 hover:border-indigo-500 rounded-xl text-[11px] font-bold text-slate-200 hover:text-white transition">' +
+                            'Oy Ver: ' + escapeHtml(d.option_a_name) +
+                        '</button>' +
+                        '<button type="button" onclick="voteDuel(\\'' + d.id + '\\', \\'B\\')" class="py-2 px-2 bg-slate-950 hover:bg-rose-600 border border-slate-800 hover:border-rose-500 rounded-xl text-[11px] font-bold text-slate-200 hover:text-white transition">' +
+                            'Oy Ver: ' + escapeHtml(d.option_b_name) +
+                        '</button>' +
+                    '</div>';
 
                 container.appendChild(card);
             });
@@ -1411,7 +1448,6 @@ function renderIndexHtml() {
                 }).then(r => r.json());
 
                 if (res.error) throw new Error(res.error);
-                localStorage.setItem('voted_duel_' + id, choice);
                 showToast('🎉 Oyunuz kaydedildi!');
                 loadHeroDuels();
             } catch(e) {
@@ -1437,13 +1473,13 @@ function renderIndexHtml() {
                         '<button onclick="filterSubCat(\\'ALL\\')" class="sub-btn active px-2.5 py-1 rounded-lg bg-slate-800 text-white text-[11px] font-bold">Tümü</button>' +
                         '<button onclick="filterSubCat(\\'Futbol\\')" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">⚽ Futbol</button>' +
                         '<button onclick="filterSubCat(\\'Basketbol\\')" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">🏀 Basketbol</button>' +
-                        '<button onclick="filterSubCat(\\'Formula 1\\')" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">🏎️️ Formula 1</button>';
+                        '<button onclick="filterSubCat(\\'Formula 1\\')" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">🏎 Formula 1</button>';
                 } else if (activeCategory === 'BORSA & FİNANS') {
                     pillsHtml = '<span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Piyasalar:</span>' +
                         '<button onclick="filterSubCat(\\'ALL\\')" class="sub-btn active px-2.5 py-1 rounded-lg bg-slate-800 text-white text-[11px] font-bold">Tümü</button>' +
                         '<button onclick="filterSubCat(\\'BIST 100\\')" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">BIST 100</button>' +
                         '<button onclick="filterSubCat(\\'Halka Arz\\')" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Halka Arz</button>' +
-                        '<button onclick="filterSubCat(\\'Emtia & Altın\\')" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Altın & Emtia</button>';
+                        '<button onclick="filterSubCat(\\'Altın & Emtia\\')" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Altın & Emtia</button>';
                 } else if (activeCategory === 'EKONOMİ') {
                     pillsHtml = '<span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Odak:</span>' +
                         '<button onclick="filterSubCat(\\'ALL\\')" class="sub-btn active px-2.5 py-1 rounded-lg bg-slate-800 text-white text-[11px] font-bold">Tümü</button>' +
@@ -1459,7 +1495,7 @@ function renderIndexHtml() {
                     pillsHtml = '<span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Stil:</span>' +
                         '<button onclick="filterSubCat(\\'ALL\\')" class="sub-btn active px-2.5 py-1 rounded-lg bg-slate-800 text-white text-[11px] font-bold">Tümü</button>' +
                         '<button onclick="filterSubCat(\\'Trendler\\')" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Moda Haftası</button>' +
-                        '<button onclick="filterSubCat(\\'Lüks & Tasarım\\')" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Tekstil & Tasarım</button>';
+                        '<button onclick="filterSubCat(\\'Lüks Tüketim\\')" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Tekstil & Tasarım</button>';
                 }
 
                 if (pillsHtml) {
@@ -1555,7 +1591,7 @@ function renderIndexHtml() {
             closeInfoModal();
         };
 
-        // PAZAR DETAYINA GEÇİŞ (CANVAS VE YORUMLARIN YÜKLENMESİ)
+        // PAZAR DETAYINA GEÇİŞ (CANVAS VE YORUMLARIN EKSİKSİZ YÜKLENMESİ)
         window.openMarketDetail = async function(slug) {
             history.pushState({}, '', '/market/' + slug);
             [secMarkets, secZarla, secPortfolio].forEach(s => s.classList.add('hidden'));
@@ -1707,7 +1743,7 @@ function renderIndexHtml() {
 
             res.comments.forEach(c => {
                 const card = document.createElement('div');
-                card.className = 'card-bg rounded-2xl p-4 space-y-2 text-xs';
+                card.className = 'card-bg rounded-2xl p-4 space-y-2 text-xs border';
                 let stanceBadge = '';
                 if (c.outcome_at_time) {
                     const isYes = c.outcome_at_time === 'YES';
