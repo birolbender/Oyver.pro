@@ -83,7 +83,7 @@ class AMMEngine {
 }
 
 // ==========================================
-// 2. VERİTABANI BAĞLANTISI VE ÇİFT TARAFLI DEFTER
+// 2. VERİTABANI BAĞLANTISI VE DEFTER
 // ==========================================
 pg.types.setTypeParser(1700, (val) => val);
 const pool = new pg.Pool({
@@ -140,7 +140,7 @@ class LedgerEngine {
 async function initDatabase() {
     const client = await pool.connect();
     try {
-        console.info('[DATABASE] Şema, Profilleme ve 16 Pazar doğrulanıyor...');
+        console.info('[DATABASE] Şema ve 16 Pazar doğrulanıyor...');
         await client.query(`CREATE EXTENSION IF NOT EXISTS "uuid-ossp";`);
 
         await client.query(`
@@ -238,30 +238,25 @@ async function initDatabase() {
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
 
-            CREATE TABLE IF NOT EXISTS p2p_duels (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                challenger_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                challenged_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                stake_kor NUMERIC(24,6) NOT NULL DEFAULT 5000.000000,
-                status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
-                challenger_score INT DEFAULT 0,
-                challenged_score INT DEFAULT 0,
-                challenger_final_guess NUMERIC(10,2),
-                challenged_final_guess NUMERIC(10,2),
-                winner_id UUID REFERENCES users(id),
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-
             CREATE TABLE IF NOT EXISTS hero_duels (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                slug VARCHAR(64) UNIQUE,
                 title TEXT NOT NULL,
                 category VARCHAR(64) NOT NULL,
                 option_a_name TEXT NOT NULL,
                 option_b_name TEXT NOT NULL,
-                votes_a INT NOT NULL DEFAULT 5420,
-                votes_b INT NOT NULL DEFAULT 4580,
+                votes_a INT NOT NULL DEFAULT 0,
+                votes_b INT NOT NULL DEFAULT 0,
                 is_active BOOLEAN NOT NULL DEFAULT TRUE,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+
+            CREATE TABLE IF NOT EXISTS duel_votes (
+                duel_id UUID NOT NULL REFERENCES hero_duels(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                choice VARCHAR(4) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (duel_id, user_id)
             );
 
             CREATE TABLE IF NOT EXISTS comments (
@@ -285,17 +280,6 @@ async function initDatabase() {
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
 
-            CREATE TABLE IF NOT EXISTS zarla_polls (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                question TEXT NOT NULL,
-                option_a TEXT NOT NULL,
-                option_b TEXT NOT NULL,
-                votes_a INT NOT NULL DEFAULT 0,
-                votes_b INT NOT NULL DEFAULT 0,
-                category VARCHAR(64) NOT NULL DEFAULT 'GÜNDEM',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-
             CREATE TABLE IF NOT EXISTS sessions (
                 token CHAR(64) PRIMARY KEY,
                 user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -303,20 +287,22 @@ async function initDatabase() {
             );
         `);
 
-        // Sütun Güvenceleri (Migration Kalkanı)
+        // Sütun Güvenceleri
         await client.query(`
             ALTER TABLE markets ADD COLUMN IF NOT EXISTS sub_category VARCHAR(64);
             ALTER TABLE users ADD COLUMN IF NOT EXISTS tier VARCHAR(32) NOT NULL DEFAULT 'Araştırmacı';
             ALTER TABLE users ADD COLUMN IF NOT EXISTS kvkk_accepted BOOLEAN NOT NULL DEFAULT FALSE;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS personality_archetype VARCHAR(64) DEFAULT 'Stratejist';
             ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_step INT NOT NULL DEFAULT 1;
+            ALTER TABLE hero_duels ADD COLUMN IF NOT EXISTS slug VARCHAR(64);
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_hero_duels_slug ON hero_duels (slug);
         `);
 
         for (const code of ['1000', '3000', '4000', '5000']) {
             await client.query(`INSERT INTO accounts (code) VALUES ($1) ON CONFLICT DO NOTHING`, [code]);
         }
 
-        // Kullanıcı Tohumlama (Yalnızca ilk DB kurulumunda)
+        // Demo Kullanıcıları
         await client.query(`
             INSERT INTO users (id, email, username, password_hash, role, balance_kor, streak, tier, personality_archetype) VALUES
             ('11111111-1111-1111-1111-111111111111', 'demo@oyver.pro', 'LeisanB', 'OAUTH_MOCK', 'USER', 14500, 5, 'Doçent', 'Stratejist'),
@@ -325,43 +311,51 @@ async function initDatabase() {
             ON CONFLICT (email) DO NOTHING;
         `);
 
-        // Hero Düellolar
-        await client.query(`
-            INSERT INTO hero_duels (title, category, option_a_name, option_b_name, votes_a, votes_b, is_active) VALUES
-            ('2028 Seçim Tercihiniz Hangisi Olur?', 'SİYASET DÜELLOSU', 'Cumhur İttifakı', 'Muhalefet Bloğu', 5420, 4580, true),
-            ('Hafta Sonu Süper Lig Derbisini Kim Kazanır?', 'SPOR DÜELLOSU', 'Galatasaray', 'Fenerbahçe', 5120, 4880, true)
-            ON CONFLICT DO NOTHING;
-        `);
+        // Hero Düellolar (Tohum Oy Yok, Gerçek Sayım Başlangıcı)
+        const initialDuels = [
+            { slug: 'secim-2028-blok', title: '2028 Cumhurbaşkanlığı Seçim Tercihiniz Hangi Blok Olur?', cat: 'GÜNDEM', optA: 'Cumhur İttifakı', optB: 'Muhalefet Bloğu' },
+            { slug: 'derbi-galip-nabiz', title: 'Hafta Sonu Süper Lig Derbisini Hangi Takım Kazanır?', cat: 'DERBİ NABZI', optA: 'Galatasaray', optB: 'Fenerbahçe' }
+        ];
 
-        // 16 ZENGİN PAZAR (GÜVENLİ UPSERT - ESKİ HAVUZLARI ASLA EZMEZ)
+        for (const d of initialDuels) {
+            await client.query(`
+                INSERT INTO hero_duels (slug, title, category, option_a_name, option_b_name, votes_a, votes_b, is_active)
+                VALUES ($1, $2, $3, $4, $5, 0, 0, true)
+                ON CONFLICT (slug) DO UPDATE SET title = EXCLUDED.title, category = EXCLUDED.category
+            `, [d.slug, d.title, d.cat, d.optA, d.optB]);
+        }
+
+        // 16 ZENGİN PAZAR (BORSA VE FİNANS AYRI)
         const rich16Markets = [
-            // BORSA & FİNANS
-            { slug: 'bist-100-2026', cat: 'BORSA & FİNANS', sub: 'BIST 100', q: 'BIST 100 Endeksi 2026 Son Çeyreğini 12.000 Puan Üzerinde Kapatır mı?', srcName: 'Borsa İstanbul Bülteni', closing: '31 Aralık 2026', yesR: 10000, noR: 10000 },
-            { slug: 'bist-halka-arz-50', cat: 'BORSA & FİNANS', sub: 'Halka Arz', q: '2026 Yılında Borsa İstanbul\'da Halka Arz Edilen Şirket Sayısı 50\'yi Aşar mı?', srcName: 'SPK Bültenleri', closing: '31 Aralık 2026', yesR: 12000, noR: 8000 },
-            { slug: 'ons-altin-3000', cat: 'BORSA & FİNANS', sub: 'Altın & Emtia', q: 'Ons Altın Fiyatı 2026 Sonuna Kadar 3.000 Dolar Seviyesini Görür mü?', srcName: 'Londra Külçe Piyasası (LBMA)', closing: '31 Aralık 2026', yesR: 9000, noR: 11000 },
+            // BORSA
+            { slug: 'bist-100-2026', cat: 'BORSA', sub: 'BIST 100', q: 'BIST 100 Endeksi 2026 Yıl Sonunu 12.000 Puanın Üzerinde Kapatır mı?', srcName: 'Borsa İstanbul Bülteni', closing: '31 Aralık 2026', yesR: 10000, noR: 10000 },
+            { slug: 'bist-halka-arz-50', cat: 'BORSA', sub: 'Halka Arz', q: '2026 Yılında Borsa İstanbul’da Halka Arz Edilen Şirket Sayısı 50’yi Aşar mı?', srcName: 'SPK Bültenleri', closing: '31 Aralık 2026', yesR: 12000, noR: 8000 },
+            { slug: 'bist-banka-rekor', cat: 'BORSA', sub: 'Sektör Endeksi', q: 'BIST Bankacılık Endeksi (XBANK) 2026 Son Çeyreğinde Tarihi Zirve Görür mü?', srcName: 'Borsa İstanbul Verileri', closing: '31 Aralık 2026', yesR: 11000, noR: 9000 },
 
-            // SPOR
-            { slug: 'super-lig-90-puan', cat: 'SPOR', sub: 'Futbol', q: '2026-2027 Süper Lig Şampiyonu 90 Puan Barajını Aşar mı?', srcName: 'TFF Resmi Puan Durumu', closing: '30 Mayıs 2027', yesR: 8000, noR: 12000 },
-            { slug: 'derbi-kirmizi-kart', cat: 'SPOR', sub: 'Futbol', q: 'İlk Galatasaray - Fenerbahçe Derbisinde Kırmızı Kart Çıkar mı?', srcName: 'TFF Maç Raporu', closing: '22 Kasım 2026', yesR: 11000, noR: 9000 },
-            { slug: 'efes-final-four', cat: 'SPOR', sub: 'Basketbol', q: 'Anadolu Efes 2026-2027 EuroLeague Sezonunda Final Four\'a Kalır mı?', srcName: 'EuroLeague Basketball', closing: '15 Mayıs 2027', yesR: 12000, noR: 8000 },
-            { slug: 'f1-ferrari-sampiyon', cat: 'SPOR', sub: 'Formula 1', q: '2026 Formula 1 Takımlar Şampiyonluğunu Ferrari Kazanır mı?', srcName: 'FIA Resmi Sonuçları', closing: '28 Kasım 2026', yesR: 13000, noR: 7000 },
+            // FİNANS
+            { slug: 'ons-altin-3200', cat: 'FİNANS', sub: 'Kıymetli Maden', q: 'Ons Altın Fiyatı 2026 Sonuna Kadar 3.200 Dolar Seviyesini Aşar mı?', srcName: 'Londra Külçe Piyasası (LBMA)', closing: '31 Aralık 2026', yesR: 9000, noR: 11000 },
+            { slug: 'gumus-ons-40', cat: 'FİNANS', sub: 'Kıymetli Maden', q: 'Ons Gümüş Fiyatı 2026 Yılı İçerisinde 40 Dolar Eşiğini Aşar mı?', srcName: 'Comex Kapanış Fiyatları', closing: '31 Aralık 2026', yesR: 10000, noR: 10000 },
+            { slug: 'tcmb-faiz-2026', cat: 'FİNANS', sub: 'Para Politikası', q: 'TCMB Politika Faizini 2026 Yıl Sonuna Kadar %30 veya Altına İndirir mi?', srcName: 'TCMB PPK Karar Metni', closing: '24 Aralık 2026', yesR: 11000, noR: 9000 },
 
-            // EKONOMİ & YAŞAM
-            { slug: 'asgari-ucret-2027', cat: 'EKONOMİ', sub: 'Asgari Ücret', q: '2027 Yılı Net Asgari Ücreti 35.000 TL Üzerinde Açıklanır mı?', srcName: 'Çalışma Bakanlığı / Resmi Gazete', closing: '31 Aralık 2026', yesR: 8000, noR: 12000 },
-            { slug: 'tcmb-faiz-2026', cat: 'EKONOMİ', sub: 'Faiz', q: 'TCMB Politika Faizini 2026 Yıl Sonuna Kadar %30 veya Altına İndirir mi?', srcName: 'TCMB PPK Karar Metni', closing: '24 Aralık 2026', yesR: 11000, noR: 9000 },
-            { slug: 'enflasyon-tek-hane', cat: 'EKONOMİ', sub: 'Enflasyon', q: 'TÜİK Yıllık Tüketici Enflasyonu 2026 Yılında %20 Altına İner mi?', srcName: 'TÜİK TÜFE Bülteni', closing: '3 Ocak 2027', yesR: 14000, noR: 6000 },
+            // EKONOMİ
+            { slug: 'asgari-ucret-2027', cat: 'EKONOMİ', sub: 'Gelir & Ücret', q: '2027 Yılı Net Asgari Ücreti 35.000 TL Üzerinde Açıklanır mı?', srcName: 'Çalışma Bakanlığı / Resmi Gazete', closing: '31 Aralık 2026', yesR: 8000, noR: 12000 },
+            { slug: 'enflasyon-2026', cat: 'EKONOMİ', sub: 'Fiyat İstikrarı', q: 'TÜİK Yıllık Tüketici Enflasyonu (TÜFE) 2026 Yılında %20 Altına İner mi?', srcName: 'TÜİK TÜFE Bülteni', closing: '3 Ocak 2027', yesR: 14000, noR: 6000 },
+            { slug: 'turkiye-buyume-2026', cat: 'EKONOMİ', sub: 'Milli Gelir', q: 'Türkiye Ekonomisi 2026 Yıllık GSYH Büyümesi %4 Üzerinde Gerçekleşir mi?', srcName: 'TÜİK Dönemsel GSYH', closing: '15 Mart 2027', yesR: 10000, noR: 10000 },
 
-            // TEKNOLOJİ
+            // TEKNOLOJİ & YAPAY ZEKA
             { slug: 'turksat-6a-ticari', cat: 'TEKNOLOJİ', sub: 'Uzay & Uydu', q: 'TÜRKSAT 6A Uydusu 2026 Yılında Tam Kapasite Ticari Hizmete Başlar mı?', srcName: 'Ulaştırma Bakanlığı', closing: '15 Kasım 2026', yesR: 6000, noR: 14000 },
-            { slug: 'yapay-zeka-kanunu', cat: 'TEKNOLOJİ', sub: 'Yapay Zeka', q: 'TBMM 2026 Yılında Kapsamlı Ulusal Yapay Zeka Yasasını Kabul Eder mi?', srcName: 'Resmi Gazete / TBMM', closing: '31 Aralık 2026', yesR: 10000, noR: 10000 },
-            { slug: 'yerli-unicorn-2026', cat: 'TEKNOLOJİ', sub: 'Yapay Zeka', q: '2026 Yılında Türkiye\'den Yeni Bir Unicorn (1 Milyar $ Değerleme) Girişim Çıkar mı?', srcName: 'Sanayi Bakanlığı', closing: '31 Aralık 2026', yesR: 9000, noR: 11000 },
+            { slug: 'yapay-zeka-kanunu', cat: 'TEKNOLOJİ', sub: 'Regülasyon', q: 'TBMM 2026 Yılında Kapsamlı Ulusal Yapay Zeka Yasasını Kabul Eder mi?', srcName: 'Resmi Gazete / TBMM Tutanakları', closing: '31 Aralık 2026', yesR: 10000, noR: 10000 },
+            { slug: 'yerli-unicorn-2026', cat: 'TEKNOLOJİ', sub: 'Girişimcilik', q: '2026 Yılında Türkiye’den Yeni Bir Unicorn (1 Milyar $ Değerleme) Girişim Çıkar mı?', srcName: 'Sanayi Bakanlığı Bülteni', closing: '31 Aralık 2026', yesR: 9000, noR: 11000 },
 
-            // MODA & STİL
-            { slug: 'ist-moda-haftasi', cat: 'MODA & STİL', sub: 'Trendler', q: 'İstanbul Moda Haftası 2027 Resmi Takviminde 20+ Yabancı Tasarımcı Yer Alır mı?', srcName: 'İHKİB Basın Bülteni', closing: '20 Mart 2027', yesR: 10000, noR: 10000 },
-            { slug: 'surdurulebilir-tekstil', cat: 'MODA & STİL', sub: 'Lüks Tüketim', q: 'Türkiye\'nin 2026 Tekstil İhracatında Geri Dönüştürülmüş Ürün Payı %15\'i Aşar mı?', srcName: 'TİM İhracat Raporu', closing: '15 Ocak 2027', yesR: 12000, noR: 8000 },
+            // DİZİ, FİLM & MEDYA
+            { slug: 'dizi-reyting-rekor', cat: 'DİZİ & MEDYA', sub: 'Televizyon', q: '2026-2027 Dizi Sezonunda Total Reytingde 15 Puan Barajını Aşan Dizi Çıkar mı?', srcName: 'TİAK Resmi Reyting Ölçümleri', closing: '31 Mayıs 2027', yesR: 10000, noR: 10000 },
+            { slug: 'turk-sinema-gise', cat: 'DİZİ & MEDYA', sub: 'Sinema', q: '2026 Yılında Türkiye Gişesinde 4 Milyon Seyirciyi Aşan Yerli Film Olur mu?', srcName: 'Box Office Türkiye', closing: '31 Aralık 2026', yesR: 12000, noR: 8000 },
 
-            // KÜLTÜR & MEDYA
-            { slug: 'turizm-ziyaretci-2026', cat: 'KÜLTÜR & YAŞAM', sub: 'Turizm & Yaşam', q: '2026 Yılında Türkiye\'ye Gelen Yabancı Ziyaretçi Sayısı 60 Milyonu Aşar mı?', srcName: 'TÜİK Turizm İstatistikleri', closing: '31 Ocak 2027', yesR: 7000, noR: 13000 }
+            // OTOMOTİV & MOBİLİTE
+            { slug: 'togg-sedan-teslimat', cat: 'OTOMOTİV', sub: 'Elektrikli Araç', q: 'TOGG T10F Sedan Modelinin İlk Ticari Müşteri Teslimatları 2026 İçinde Başlar mı?', srcName: 'TOGG Resmi Basın Bülteni', closing: '31 Aralık 2026', yesR: 7000, noR: 13000 },
+
+            // SPOR RESMİ HEDEFLER
+            { slug: 'olimpiyat-madalya-2028', cat: 'SPOR', sub: 'Olimpiyat', q: 'Milli Sporcularımız 2028 Los Angeles Olimpiyatlarında 10 ve Üzeri Madalya Kazanır mı?', srcName: 'TMOK Resmi Kayıtları', closing: '31 Ağustos 2028', yesR: 10000, noR: 10000 }
         ];
 
         for (const item of rich16Markets) {
@@ -393,7 +387,7 @@ async function initDatabase() {
                 }
             }
         }
-        console.info('[DATABASE] 16 Pazar ve Rezervler UPSERT Edildi.');
+        console.info('[DATABASE] Sistem 16 Pazar ve Rezervlerle Hazırlandı.');
     } finally {
         client.release();
     }
@@ -413,7 +407,7 @@ function broadcast(type, payload) {
     }
 }
 
-// GÜVENLİ AUTH KANCASI (GUEST İZOLASYONU)
+// GÜVENLİ AUTH KANCASI (MİSAFİR İZOLASYONU)
 app.addHook('onRequest', async (req) => {
     let token = null;
     const cookie = req.headers.cookie;
@@ -431,7 +425,6 @@ app.addHook('onRequest', async (req) => {
             return;
         }
     }
-    // Token yoksa MİSAFİR (İşlem yapamaz, 401 alır)
     req.userId = null;
     req.userRole = 'GUEST';
     req.username = 'Misafir';
@@ -444,7 +437,7 @@ app.get('/ws', { websocket: true }, (connection) => {
     ws.on('close', () => wsClients.delete(ws));
 });
 
-app.get('/health', async () => ({ status: 'UP', version: 'v1.4-RECOVERY-PRODUCTION', timestamp: new Date().toISOString() }));
+app.get('/health', async () => ({ status: 'UP', version: 'v1.4-STABLE-PRODUCTION', timestamp: new Date().toISOString() }));
 
 app.get('/api/me', async (req) => {
     if (!req.userId) return { username: 'Misafir', role: 'GUEST', balance_kor: 0, streak: 0, tier: 'Gözlemci', kvkk_accepted: false };
@@ -452,147 +445,58 @@ app.get('/api/me', async (req) => {
     return r.rows[0] || {};
 });
 
-// ==========================================
-// KADEMELİ PROFİLLEME (3 ADIMLI AKIŞ)
-// ==========================================
-app.post('/api/profile/step1', async (req, rep) => {
-    if (!req.userId) return rep.status(401).send({ error: 'Lütfen giriş yapın.' });
-    const { kvkkAccepted, birthYear, city, industry } = req.body || {};
-    if (!kvkkAccepted || !birthYear || !city || !industry) return rep.status(400).send({ error: 'Zorunlu alanları doldurun ve KVKK onayını verin.' });
-
-    const u = await pool.query(`
-        UPDATE users SET kvkk_accepted = true, birth_year = $1, city = $2, industry = $3, profile_step = GREATEST(profile_step, 2), balance_kor = balance_kor + 1000
-        WHERE id = $4 RETURNING balance_kor, profile_step
-    `, [birthYear, city, industry, req.userId]);
-    return { success: true, balanceKor: Math.round(parseFloat(u.rows[0].balance_kor)), step: u.rows[0].profile_step };
+// HERO DÜELLOLAR (GERÇEK OYLAMA)
+app.get('/api/duels', async (req) => {
+    const r = await pool.query(`SELECT * FROM hero_duels WHERE is_active = true ORDER BY created_at ASC`);
+    const userVotes = req.userId ? (await pool.query(`SELECT duel_id, choice FROM duel_votes WHERE user_id = $1`, [req.userId])).rows : [];
+    
+    return {
+        duels: r.rows.map(d => {
+            const tot = d.votes_a + d.votes_b;
+            const pctA = tot > 0 ? Math.round((d.votes_a / tot) * 100) : 50;
+            const myVote = userVotes.find(v => v.duel_id === d.id);
+            return {
+                ...d,
+                pctA,
+                pctB: 100 - pctA,
+                totalVotes: tot.toLocaleString('tr-TR'),
+                hasVoted: !!myVote,
+                userChoice: myVote ? myVote.choice : null
+            };
+        })
+    };
 });
 
-app.post('/api/profile/step2', async (req, rep) => {
-    if (!req.userId) return rep.status(401).send({ error: 'Lütfen giriş yapın.' });
-    const { favTeam, mobilityType, riskChoice } = req.body || {};
-    if (!favTeam || !mobilityType || !riskChoice) return rep.status(400).send({ error: 'Eksik bilgi' });
-
-    const u = await pool.query(`
-        UPDATE users SET fav_team = $1, mobility_type = $2, risk_choice = $3, profile_step = GREATEST(profile_step, 3), balance_kor = balance_kor + 1500
-        WHERE id = $4 RETURNING balance_kor, profile_step
-    `, [favTeam, mobilityType, riskChoice, req.userId]);
-    return { success: true, balanceKor: Math.round(parseFloat(u.rows[0].balance_kor)), step: u.rows[0].profile_step };
-});
-
-app.post('/api/profile/step3', async (req, rep) => {
-    if (!req.userId) return rep.status(401).send({ error: 'Lütfen giriş yapın.' });
-    const { musicTaste, coffeeHabit, contrarianChoice } = req.body || {};
-    if (!musicTaste || !coffeeHabit || !contrarianChoice) return rep.status(400).send({ error: 'Eksik bilgi' });
-
-    const uData = (await pool.query(`SELECT risk_choice FROM users WHERE id = $1`, [req.userId])).rows[0];
-    const risk = uData?.risk_choice || 'A';
-    let archetype = 'Sağlamcı (Dengeli Tüketici)';
-    if (risk === 'A' && contrarianChoice === 'B') archetype = 'Stratejist (Value Investor)';
-    else if (risk === 'B' && contrarianChoice === 'B') archetype = 'Öncü (Venture Capitalist)';
-    else if (risk === 'B' && contrarianChoice === 'A') archetype = 'Trend Takipçisi (Momentum)';
-
-    const u = await pool.query(`
-        UPDATE users SET music_taste = $1, coffee_habit = $2, contrarian_choice = $3, personality_archetype = $4, profile_step = 4, balance_kor = balance_kor + 1000
-        WHERE id = $5 RETURNING balance_kor, personality_archetype
-    `, [musicTaste, coffeeHabit, contrarianChoice, archetype, req.userId]);
-    return { success: true, balanceKor: Math.round(parseFloat(u.rows[0].balance_kor)), archetype: u.rows[0].personality_archetype };
-});
-
-// ==========================================
-// P2P DÜELLO ARENASI (12 SN SAYAÇLI 16 SORU)
-// ==========================================
-const P2P_QUESTIONS = [
-    { id: 1, stage: 1, q: "Piyasa değeri bakımından hangisi diğerinden daha büyüktür?", a: "Spotify (SPOT)", b: "Türk Hava Yolları (THYAO)", correct: "A" },
-    { id: 2, stage: 1, q: "İstanbul'da günde ortalama kaç milyon kişi toplu taşıma kullanır?", a: "3 - 5 Milyon", b: "7 - 9 Milyon", correct: "B" },
-    { id: 3, stage: 1, q: "2026 yılı itibarıyla Türkiye'nin yıllık ihracat hedefi hangisine daha yakındır?", a: "270 Milyar $", b: "390 Milyar $", correct: "A" },
-    { id: 4, stage: 1, q: "BIST 100 işlem hacminde tarihsel olarak hangi sektör genelde liderdir?", a: "Bankacılık & Finans", b: "Madencilik", correct: "A" },
-    { id: 5, stage: 1, q: "TCMB brüt döviz rezervleri hangi bandın üzerindedir?", a: "140 Milyar $ Üstü", b: "90 Milyar $ Altı", correct: "A" },
-    { id: 6, stage: 1, q: "Global akıllı telefon pazarında teslimat payında hangisi öndedir?", a: "Apple", b: "Samsung", correct: "B" },
-    { id: 7, stage: 1, q: "Hangisi Türkiye'nin en büyük organize sanayi bölgesidir?", a: "Bursa OSB", b: "Gaziantep OSB", correct: "B" },
-    { id: 8, stage: 1, q: "Türkiye'nin nüfus ortanca yaşı hangisine daha yakındır?", a: "34 Yaş", b: "41 Yaş", correct: "A" },
-    { id: 9, stage: 1, q: "Petrol fiyatlarında referans alınan Brent Petrol hangi bölgeden çıkarılır?", a: "Kuzey Denizi", b: "Basra Körfezi", correct: "A" },
-    { id: 10, stage: 1, q: "Ethereum blokzincirinin konsensüs mekanizması nedir?", a: "Proof of Stake (PoS)", b: "Proof of Work (PoW)", correct: "A" },
-    { id: 11, stage: 2, q: "Bir kutuda 3 kırmızı, 2 mavi top var. Geri koymadan çekilen 2 topun aynı renk olma olasılığı %50'den büyük müdür?", a: "Hayır (%40)", b: "Evet (%60)", correct: "A" },
-    { id: 12, stage: 2, q: "Bir hisse %50 düşüp ardından %50 yükselirse ilk maliyetine ulaşır mı?", a: "Ulaşır", b: "Ulaşamaz (%25 zarardadır)", correct: "B" },
-    { id: 13, stage: 2, q: "İki zar atıldığında toplamın 7 gelme olasılığı 8 gelme olasılığından yüksek midir?", a: "Evet (6/36 vs 5/36)", b: "Hayır, eşittir", correct: "A" },
-    { id: 14, stage: 2, q: "Piyasa faizleri yükseldiğinde mevcut tahvillerin piyasa fiyatı ne yönde hareket eder?", a: "Düşer", b: "Yükselir", correct: "A" },
-    { id: 15, stage: 2, q: "Bir test %99 güvenilirdir. Hastalık sıklığı 1/10.000 ise, pozitif çıkan birinin gerçekten hasta olma ihtimali %50'den büyük müdür?", a: "Büyüktür", b: "Küçüktür (Bayes)", correct: "B" },
-    { id: 16, stage: 3, q: "TÜİK verilerine göre Türkiye'deki ortalama hanehalkı büyüklüğü kaçtır? (Ondalık yazın, örn: 3.14)", actualValue: 3.14 }
-];
-
-app.get('/api/p2p/questions', async () => ({ questions: P2P_QUESTIONS }));
-
-app.post('/api/p2p/challenge', async (req, rep) => {
-    if (!req.userId) return rep.status(401).send({ error: 'Meydan okumak için giriş yapmalısınız.' });
-    const { targetUsername } = req.body || {};
-    const tUser = (await pool.query(`SELECT id FROM users WHERE username ILIKE $1`, [targetUsername])).rows[0];
-    if (!tUser) return rep.status(404).send({ error: 'Kullanıcı bulunamadı.' });
+app.post('/api/duels/:id/vote', async (req, rep) => {
+    if (!req.userId) return rep.status(401).send({ error: 'Oy kullanmak için giriş yapmalısınız.' });
+    const { choice } = req.body || {};
+    if (choice !== 'A' && choice !== 'B') return rep.status(400).send({ error: 'Geçersiz tercih' });
 
     try {
         const result = await runInTransaction(async (c) => {
-            const ur = await c.query(`UPDATE users SET balance_kor = balance_kor - 5000 WHERE id = $1 AND balance_kor >= 5000 RETURNING balance_kor`, [req.userId]);
-            if (ur.rows.length === 0) throw new Error('En az 5.000 KOR teminatınız olmalıdır.');
+            const check = await c.query(`SELECT 1 FROM duel_votes WHERE duel_id = $1 AND user_id = $2`, [req.params.id, req.userId]);
+            if (check.rows.length > 0) throw new Error('Bu düelloda zaten oy kullandınız.');
 
-            const duelRes = await c.query(`INSERT INTO p2p_duels (challenger_id, challenged_id) VALUES ($1, $2) RETURNING id`, [req.userId, tUser.id]);
-            return { duelId: duelRes.rows[0].id, newBalance: MoneyMath.roundDown(ur.rows[0].balance_kor, 0).toNumber() };
+            await c.query(`INSERT INTO duel_votes (duel_id, user_id, choice) VALUES ($1, $2, $3)`, [req.params.id, req.userId, choice]);
+            const col = choice === 'A' ? 'votes_a' : 'votes_b';
+            const r = await c.query(`UPDATE hero_duels SET ${col} = ${col} + 1 WHERE id = $1 RETURNING votes_a, votes_b`, [req.params.id]);
+            const tot = r.rows[0].votes_a + r.rows[0].votes_b;
+            return { pctA: Math.round((r.rows[0].votes_a / tot) * 100), pctB: 100 - Math.round((r.rows[0].votes_a / tot) * 100), totalVotes: tot.toLocaleString('tr-TR') };
         });
+
+        broadcast('DUEL_VOTE', { duelId: req.params.id, ...result });
         return rep.send({ success: true, ...result });
     } catch(e) {
         return rep.status(400).send({ error: e.message });
     }
 });
 
-app.post('/api/p2p/submit-turn', async (req, rep) => {
-    if (!req.userId) return rep.status(401).send({ error: 'Giriş yapmalısınız.' });
-    const { duelId, answers, finalGuess } = req.body || {};
-    const duel = (await pool.query(`SELECT * FROM p2p_duels WHERE id = $1`, [duelId])).rows[0];
-    if (!duel) return rep.status(404).send({ error: 'Düello bulunamadı.' });
-
-    let score = 0;
-    for (let i = 0; i < 15; i++) {
-        if (answers[P2P_QUESTIONS[i].id] === P2P_QUESTIONS[i].correct) score++;
-    }
-
-    if (duel.challenger_id === req.userId) {
-        await pool.query(`UPDATE p2p_duels SET challenger_score = $1, challenger_final_guess = $2, status = 'CHALLENGER_DONE' WHERE id = $3`, [score, parseFloat(finalGuess) || 0, duelId]);
-        return rep.send({ success: true, role: 'CHALLENGER', score });
-    } else if (duel.challenged_id === req.userId) {
-        const result = await runInTransaction(async (c) => {
-            const ur = await c.query(`UPDATE users SET balance_kor = balance_kor - 5000 WHERE id = $1 AND balance_kor >= 5000 RETURNING balance_kor`, [req.userId]);
-            if (ur.rows.length === 0) throw new Error('Düelloyu kabul etmek için 5.000 KOR teminatınız olmalıdır.');
-
-            let winnerId = duel.challenger_id;
-            if (score > duel.challenger_score) winnerId = duel.challenged_id;
-            else if (score === duel.challenger_score) {
-                const diffA = Math.abs(parseFloat(duel.challenger_final_guess) - 3.14);
-                const diffB = Math.abs((parseFloat(finalGuess) || 0) - 3.14);
-                winnerId = diffB < diffA ? duel.challenged_id : duel.challenger_id;
-            }
-
-            await c.query(`UPDATE users SET balance_kor = balance_kor + 9600 WHERE id = $1`, [winnerId]);
-            await c.query(`UPDATE p2p_duels SET challenged_score = $1, challenged_final_guess = $2, status = 'COMPLETED', winner_id = $3 WHERE id = $4`, [score, parseFloat(finalGuess) || 0, winnerId, duelId]);
-            return { winnerId, myScore: score, oppScore: duel.challenger_score };
-        });
-        return rep.send({ success: true, role: 'CHALLENGED', ...result });
-    }
-    return rep.status(403).send({ error: 'Yetkisiz.' });
-});
-
-app.get('/api/p2p/pending-challenges', async (req) => {
-    if (!req.userId) return { pending: [] };
-    const r = await pool.query(`
-        SELECT d.id, u.username as challenger_name 
-        FROM p2p_duels d JOIN users u ON d.challenger_id = u.id 
-        WHERE d.challenged_id = $1 AND d.status = 'CHALLENGER_DONE' ORDER BY d.created_at DESC
-    `, [req.userId]);
-    return { pending: r.rows };
-});
-
-// ==========================================
-// PAZARLAR & QUOTE & AL-SAT MOTORU
-// ==========================================
+// PAZARLAR & DETAY
 app.get('/api/markets', async () => {
-    const r = await pool.query(`SELECT m.*, COALESCE(a.yes_reserve, 10000) as yes_reserve, COALESCE(a.no_reserve, 10000) as no_reserve FROM markets m LEFT JOIN amm_state a ON m.id = a.market_id ORDER BY m.created_at ASC`);
+    const r = await pool.query(`
+        SELECT m.*, COALESCE(a.yes_reserve, 10000) as yes_reserve, COALESCE(a.no_reserve, 10000) as no_reserve 
+        FROM markets m LEFT JOIN amm_state a ON m.id = a.market_id ORDER BY m.created_at ASC
+    `);
     return {
         markets: r.rows.map(m => {
             const y = new Decimal(m.yes_reserve), n = new Decimal(m.no_reserve);
@@ -603,7 +507,11 @@ app.get('/api/markets', async () => {
 });
 
 app.get('/api/markets/:slug', async (req, rep) => {
-    const r = await pool.query(`SELECT m.*, COALESCE(a.yes_reserve, 10000) as yes_reserve, COALESCE(a.no_reserve, 10000) as no_reserve FROM markets m LEFT JOIN amm_state a ON m.id = a.market_id WHERE m.slug = $1`, [req.params.slug]);
+    const r = await pool.query(`
+        SELECT m.*, COALESCE(a.yes_reserve, 10000) as yes_reserve, COALESCE(a.no_reserve, 10000) as no_reserve 
+        FROM markets m LEFT JOIN amm_state a ON m.id = a.market_id WHERE m.slug = $1
+    `, [req.params.slug]);
+
     if (r.rows.length === 0) return rep.status(404).send({ error: 'Pazar bulunamadı.' });
     const m = r.rows[0];
     const y = new Decimal(m.yes_reserve), n = new Decimal(m.no_reserve);
@@ -614,6 +522,7 @@ app.get('/api/markets/:slug', async (req, rep) => {
     return { market: { ...m, probYes, probNo: 100 - probYes, poolTotal: Math.round(y.plus(n).toNumber()).toLocaleString('tr-TR') }, history: hr.rows };
 });
 
+// QUOTE MOTORU
 app.post('/api/trade/quote', async (req, rep) => {
     const { marketId, outcome, amountKor, action, sharesIn } = req.body || {};
     const mr = await pool.query(`SELECT yes_reserve, no_reserve FROM amm_state WHERE market_id = $1`, [marketId]);
@@ -631,14 +540,18 @@ app.post('/api/trade/quote', async (req, rep) => {
     }
 });
 
+// TAHMİN ALIM (BUY)
 app.post('/api/trade/predict', async (req, rep) => {
-    if (!req.userId) return rep.status(401).send({ error: 'Tahmin girmek için giriş yapmalısınız.' });
+    if (!req.userId) return rep.status(401).send({ error: 'Tahmin bildirmek için giriş yapmalısınız.' });
     const { marketId, outcome, amountKor } = req.body || {};
     const amt = new Decimal(amountKor || 0);
     if (!marketId || !outcome || amt.lte(0)) return rep.status(400).send({ error: 'Geçersiz parametre.' });
 
     try {
         const result = await runInTransaction(async (c) => {
+            const mCheck = await c.query(`SELECT status FROM markets WHERE id = $1`, [marketId]);
+            if (mCheck.rows.length === 0 || mCheck.rows[0].status !== 'TRADING') throw new Error('Bu oylama kapalıdır.');
+
             const ur = await c.query(`UPDATE users SET balance_kor = balance_kor - $1 WHERE id = $2 AND balance_kor >= $1 RETURNING balance_kor`, [amt.toFixed(6), req.userId]);
             if (ur.rows.length === 0) throw new Error('Yetersiz KOR bakiyesi.');
 
@@ -682,6 +595,7 @@ app.post('/api/trade/predict', async (req, rep) => {
     }
 });
 
+// ERKEN SATIŞ (SELL)
 app.post('/api/trade/sell', async (req, rep) => {
     if (!req.userId) return rep.status(401).send({ error: 'İşlem için giriş yapmalısınız.' });
     const { marketId, outcome, sharesToSell } = req.body || {};
@@ -740,20 +654,27 @@ app.get('/api/portfolio', async (req) => {
     return { active, settled };
 });
 
-// YORUMLAR
+// YORUMLAR & KOHORT & CSV
 app.get('/api/markets/:slug/comments', async (req, rep) => {
     const mRes = await pool.query(`SELECT id FROM markets WHERE slug = $1`, [req.params.slug]);
     if (mRes.rows.length === 0) return rep.status(404).send({ error: 'Pazar bulunamadı' });
-    const r = await pool.query(`SELECT c.*, u.username, u.tier, to_char(c.created_at, 'DD Mon YYYY, HH24:MI') as time_formatted FROM comments c JOIN users u ON c.user_id = u.id WHERE c.market_id = $1 ORDER BY c.upvotes DESC, c.created_at DESC`, [mRes.rows[0].id]);
+
+    const r = await pool.query(`
+        SELECT c.*, u.username, u.tier, to_char(c.created_at, 'DD Mon YYYY, HH24:MI') as time_formatted
+        FROM comments c JOIN users u ON c.user_id = u.id
+        WHERE c.market_id = $1 ORDER BY c.upvotes DESC, c.created_at DESC
+    `, [mRes.rows[0].id]);
     return { comments: r.rows };
 });
 
 app.post('/api/markets/:slug/comments', async (req, rep) => {
-    if (!req.userId) return rep.status(401).send({ error: 'Giriş yapmalısınız.' });
+    if (!req.userId) return rep.status(401).send({ error: 'Analiz paylaşmak için giriş yapmalısınız.' });
     const { content } = req.body || {};
     if (!content || content.trim().length < 5) return rep.status(400).send({ error: 'Analiz en az 5 karakter olmalıdır.' });
 
     const mRes = await pool.query(`SELECT id FROM markets WHERE slug = $1`, [req.params.slug]);
+    if (mRes.rows.length === 0) return rep.status(404).send({ error: 'Pazar bulunamadı' });
+
     const posRes = await pool.query(`SELECT outcome, shares FROM positions WHERE market_id = $1 AND user_id = $2 AND shares > 0.001 LIMIT 1`, [mRes.rows[0].id, req.userId]);
     const outcome = posRes.rows.length > 0 ? posRes.rows[0].outcome : null;
     const shares = posRes.rows.length > 0 ? Math.round(parseFloat(posRes.rows[0].shares)) : 0;
@@ -762,33 +683,27 @@ app.post('/api/markets/:slug/comments', async (req, rep) => {
     return { success: true };
 });
 
-// B2B KOHORT & CSV EXPORT
 app.get('/api/markets/:slug/cohorts', async (req, rep) => {
     const mRes = await pool.query(`SELECT id FROM markets WHERE slug = $1`, [req.params.slug]);
     if (mRes.rows.length === 0) return rep.status(404).send({ error: 'Pazar bulunamadı' });
 
-    const eduRes = await pool.query(`SELECT u.education_level, p.outcome, COUNT(p.id) as vote_count FROM positions p JOIN users u ON p.user_id = u.id WHERE p.market_id = $1 AND p.shares > 0.001 GROUP BY u.education_level, p.outcome`, [mRes.rows[0].id]);
+    const eduRes = await pool.query(`SELECT u.industry, p.outcome, COUNT(p.id) as vote_count FROM positions p JOIN users u ON p.user_id = u.id WHERE p.market_id = $1 AND p.shares > 0.001 GROUP BY u.industry, p.outcome`, [mRes.rows[0].id]);
     const ageRes = await pool.query(`SELECT CASE WHEN (2026 - u.birth_year) < 30 THEN 'Genç (18-29)' WHEN (2026 - u.birth_year) BETWEEN 30 AND 44 THEN 'Orta Yaş (30-44)' ELSE 'Deneyimli (45+)' END as age_group, p.outcome, COUNT(p.id) as vote_count FROM positions p JOIN users u ON p.user_id = u.id WHERE p.market_id = $1 AND p.shares > 0.001 AND u.birth_year IS NOT NULL GROUP BY age_group, p.outcome`, [mRes.rows[0].id]);
-
-    return { educationCohorts: eduRes.rows, ageCohorts: ageRes.rows };
+    return { industryCohorts: eduRes.rows, ageCohorts: ageRes.rows };
 });
 
 app.get('/api/markets/:slug/export', async (req, rep) => {
     const mRes = await pool.query(`SELECT id, question FROM markets WHERE slug = $1`, [req.params.slug]);
     if (mRes.rows.length === 0) return rep.status(404).send('Not found');
 
-    const pRes = await pool.query(`
-        SELECT p.outcome, p.shares, p.total_invested, u.city, u.industry, u.birth_year, u.personality_archetype
-        FROM positions p JOIN users u ON p.user_id = u.id WHERE p.market_id = $1 AND p.shares > 0.001
-    `, [mRes.rows[0].id]);
-
-    let csv = 'Pazar,Yön,Pay,Yatirim_KOR,Sehir,Sektor,DogumYili,Arketip\n';
+    const pRes = await pool.query(`SELECT p.outcome, p.shares, p.total_invested, u.city, u.industry, u.birth_year, u.personality_archetype FROM positions p JOIN users u ON p.user_id = u.id WHERE p.market_id = $1 AND p.shares > 0.001`, [mRes.rows[0].id]);
+    let csv = 'Pazar,Tercih,Pay,Yatirim_KOR,Sehir,Sektor,Dogum_Yili,Arketip\n';
     pRes.rows.forEach(r => {
         csv += `"${mRes.rows[0].question}","${r.outcome}",${r.shares},${r.total_invested},"${r.city || ''}","${r.industry || ''}","${r.birth_year || ''}","${r.personality_archetype || ''}"\n`;
     });
 
     rep.header('Content-Type', 'text/csv; charset=utf-8');
-    rep.header('Content-Disposition', `attachment; filename="oyver_cohort_${req.params.slug}.csv"`);
+    rep.header('Content-Disposition', `attachment; filename="oyver_${req.params.slug}.csv"`);
     return csv;
 });
 
@@ -810,69 +725,30 @@ app.get('/api/leaderboard', async () => {
     return { top100: leaderboard.slice(0, 100).map((item, idx) => ({ rank: idx + 1, ...item })) };
 });
 
-// DÜELLOLAR & OYLA
-app.get('/api/duels', async () => {
-    const r = await pool.query(`SELECT * FROM hero_duels WHERE is_active = true ORDER BY created_at ASC`);
-    return {
-        duels: r.rows.map(d => ({
-            ...d, pctA: Math.round((d.votes_a / (d.votes_a + d.votes_b)) * 100), pctB: 100 - Math.round((d.votes_a / (d.votes_a + d.votes_b)) * 100), totalVotes: (d.votes_a + d.votes_b).toLocaleString('tr-TR')
-        }))
-    };
-});
-
-app.post('/api/duels/:id/vote', async (req, rep) => {
-    const col = req.body?.choice === 'A' ? 'votes_a' : 'votes_b';
-    const r = await pool.query(`UPDATE hero_duels SET ${col} = ${col} + 1 WHERE id = $1 RETURNING votes_a, votes_b`, [req.params.id]);
-    const tot = r.rows[0].votes_a + r.rows[0].votes_b;
-    return { success: true, pctA: Math.round((r.rows[0].votes_a / tot) * 100), pctB: 100 - Math.round((r.rows[0].votes_a / tot) * 100), totalVotes: tot.toLocaleString('tr-TR') };
-});
-
-app.get('/api/zarla', async () => {
-    const r = await pool.query(`SELECT * FROM zarla_polls ORDER BY created_at ASC`);
-    return {
-        polls: r.rows.map(p => ({
-            ...p, pctA: Math.round((p.votes_a / (p.votes_a + p.votes_b || 1)) * 100), pctB: 100 - Math.round((p.votes_a / (p.votes_a + p.votes_b || 1)) * 100), totalVotes: (p.votes_a + p.votes_b).toLocaleString('tr-TR')
-        }))
-    };
-});
-
-app.post('/api/zarla/vote', async (req, rep) => {
-    const col = req.body?.choice === 'A' ? 'votes_a' : 'votes_b';
-    await pool.query(`UPDATE zarla_polls SET ${col} = ${col} + 1 WHERE id = $1`, [req.body?.pollId]);
-    return { success: true };
-});
-
 app.post('/api/contact', async (req, rep) => {
     await pool.query(`INSERT INTO contact_leads (type, name, email, company, message) VALUES ($1, $2, $3, $4, $5)`, [req.body?.type || 'GENERAL', req.body?.name, req.body?.email, req.body?.company, req.body?.message]);
-    return { success: true, message: 'Talebiniz kaydedildi.' };
+    return { success: true, message: 'Mesajınız iletildi.' };
 });
 
 app.post('/api/auth/login-mock', async (req, rep) => {
     const name = req.body?.username || 'LeisanB';
     const email = `${name.toLowerCase()}@oyver.pro`;
-    const ur = await pool.query(`
-        INSERT INTO users (email, username, password_hash, role, balance_kor, streak, tier)
-        VALUES ($1, $2, 'OAUTH_MOCK', 'USER', 14500, 5, 'Doçent')
-        ON CONFLICT (email) DO UPDATE SET username = EXCLUDED.username
-        RETURNING id, username, role, balance_kor, streak, tier
-    `, [email, name]);
-
-    const user = ur.rows[0];
+    const ur = await pool.query(`INSERT INTO users (email, username, tier) VALUES ($1, $2, 'Doçent') ON CONFLICT (email) DO UPDATE SET username = EXCLUDED.username RETURNING id, username, balance_kor`, [email, name]);
     const token = crypto.randomBytes(32).toString('hex');
-    await pool.query(`INSERT INTO sessions (token, user_id) VALUES ($1, $2)`, [token, user.id]);
+    await pool.query(`INSERT INTO sessions (token, user_id) VALUES ($1, $2)`, [token, ur.rows[0].id]);
     rep.header('Set-Cookie', `oyver_token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
-    return { success: true, user };
+    return { success: true };
 });
 
 // ==========================================
-// 4. FRONTEND ARAYÜZÜ (DATA-ACTION DELEGATION İLE YENİDEN İNŞA EDİLDİ)
+// 4. FRONTEND ARAYÜZÜ (G3 SÖZLEŞMESİ & OBSIDIAN TEMA)
 // ==========================================
 function renderIndexHtml() {
     return `<!DOCTYPE html>
 <html lang="tr" class="theme-obsidian">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OYVER PRO - Liyakat Tabanlı Kolektif Öngörü Terminali</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -893,7 +769,7 @@ function renderIndexHtml() {
 
     <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
-    <!-- HEADER (PORTFÖY VE PROFİL YAN YANA) -->
+    <!-- G3 SÖZLEŞMESİ HEADER (TEK SATIR, TAŞMASIZ, TEMİZ) -->
     <header class="sticky top-0 z-40 bg-[#080c14]/90 backdrop-blur-md border-b border-slate-800/80">
         <div class="container mx-auto px-4 h-16 flex items-center justify-between gap-4 max-w-5xl">
             <div class="flex items-center space-x-6">
@@ -901,27 +777,17 @@ function renderIndexHtml() {
                     OYVER<span class="text-[11px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">PRO</span>
                 </a>
                 <nav class="hidden sm:flex items-center space-x-2 text-xs font-bold">
-                    <button data-action="nav-zarla" class="px-3.5 py-2 rounded-xl text-slate-300 hover:text-white hover:bg-slate-900 transition flex items-center gap-2">
-                        <i class="fas fa-poll text-indigo-400"></i> OYLA (Günün Nabzı)
+                    <button data-action="nav-vs" class="px-3.5 py-2 rounded-xl text-slate-300 hover:text-white hover:bg-slate-900 transition flex items-center gap-2">
+                        <i class="fas fa-bolt text-amber-400"></i> VS Arenası
                     </button>
-                    <button data-action="open-explainer" class="px-3 py-1.5 rounded-xl text-indigo-300 hover:text-white hover:bg-indigo-950/40 border border-indigo-500/20 transition flex items-center gap-1.5">
-                        <i class="fas fa-sparkles text-amber-400"></i> 30s Rehber
-                    </button>
-                    <button data-action="open-p2p" class="px-3 py-1.5 rounded-xl bg-purple-600/20 text-purple-300 border border-purple-500/30 hover:bg-purple-600 hover:text-white transition flex items-center gap-1.5">
-                        <i class="fas fa-swords"></i> ⚔️ P2P Meydan Oku
+                    <button data-action="nav-portfolio" class="px-3 py-1.5 rounded-xl text-slate-300 hover:text-white hover:bg-slate-900 transition flex items-center gap-1.5">
+                        <i class="fas fa-briefcase text-emerald-400"></i> Portföyüm
                     </button>
                 </nav>
             </div>
 
+            <!-- G3 SAĞ KÜME (TEK HAP: SERİ + KOR + PROFİL MENÜSÜ) -->
             <div class="flex items-center space-x-2.5">
-                <button data-action="toggle-theme" class="px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1.5" title="Tema Değiştir">
-                    <i class="fas fa-palette text-amber-400"></i> <span class="hidden md:inline" id="theme-label">Obsidian</span>
-                </button>
-
-                <button data-action="nav-portfolio" class="px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-bold text-slate-300 hover:text-white hover:border-slate-700 transition flex items-center gap-1.5">
-                    <i class="fas fa-briefcase text-emerald-400"></i> <span class="hidden sm:inline">Portföyüm</span>
-                </button>
-
                 <div class="relative">
                     <div id="user-badge" class="flex items-center bg-slate-900 border border-slate-800 rounded-xl p-1 pr-3 space-x-2 cursor-pointer hover:border-slate-700 transition" data-action="toggle-user-dropdown">
                         <div class="flex items-center gap-1 bg-slate-950 px-2 py-1 rounded-lg border border-slate-800">
@@ -929,11 +795,11 @@ function renderIndexHtml() {
                             <span id="user-streak" class="text-xs font-black text-amber-400">5g</span>
                         </div>
                         <div class="text-xs font-bold text-slate-200" id="user-balance">-- KOR</div>
-                        <span id="user-tier-badge" class="px-1.5 py-0.5 rounded text-[10px] font-black uppercase bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">Misafir</span>
                         <i class="fas fa-chevron-down text-[10px] text-slate-500"></i>
                     </div>
 
-                    <div id="user-dropdown" class="hidden absolute right-0 top-14 w-64 bg-[#0d131f] border border-slate-800 rounded-2xl shadow-2xl p-2 z-50 space-y-1">
+                    <!-- PROFİL MENÜSÜ (TÜM İKİNCİL ARAÇLAR BURADA) -->
+                    <div id="user-dropdown" class="hidden absolute right-0 top-14 w-60 bg-[#0d131f] border border-slate-800 rounded-2xl shadow-2xl p-2 z-50 space-y-1">
                         <div class="px-3 py-2 border-b border-slate-800/80 mb-1">
                             <div class="text-xs font-bold text-white flex justify-between">
                                 <span id="dd-username">Misafir</span>
@@ -941,21 +807,24 @@ function renderIndexHtml() {
                             </div>
                             <div class="text-[10px] text-indigo-400 font-bold" id="dd-tier">Gözlemci</div>
                         </div>
+                        <button data-action="open-explainer" class="w-full text-left px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800/60 rounded-xl transition flex items-center gap-2">
+                            <i class="fas fa-sparkles text-amber-400"></i> 30s Rehber
+                        </button>
                         <button data-action="open-profile-step" class="w-full text-left px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800/60 rounded-xl transition flex items-center gap-2">
                             <i class="fas fa-user-check text-purple-400"></i> Profilini Tamamla (+3.500 KOR)
                         </button>
-                        <button data-action="open-inbox" class="w-full text-left px-3 py-2 text-xs font-bold text-amber-300 hover:bg-slate-800/60 rounded-xl transition flex items-center justify-between">
-                            <span class="flex items-center gap-2"><i class="fas fa-inbox text-amber-400"></i> Gelen Meydan Okumalar</span>
-                            <span id="inbox-badge" class="hidden px-1.5 py-0.2 bg-amber-500 text-slate-950 font-black rounded-full text-[10px]">0</span>
-                        </button>
                         <button data-action="open-leaderboard" class="w-full text-left px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800/60 rounded-xl transition flex items-center gap-2">
-                            <i class="fas fa-graduation-cap text-amber-400"></i> Akademik Liyakat Ligi
+                            <i class="fas fa-graduation-cap text-indigo-400"></i> Akademik Liyakat Ligi
+                        </button>
+                        <button data-action="toggle-theme" class="w-full text-left px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800/60 rounded-xl transition flex items-center justify-between">
+                            <span class="flex items-center gap-2"><i class="fas fa-palette text-pink-400"></i> Tema Değiştir</span>
+                            <span class="text-[10px] text-slate-400" id="theme-label">Obsidian</span>
                         </button>
                         <button data-action="open-drawer" data-drawer="about" class="w-full text-left px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800/60 rounded-xl transition flex items-center gap-2">
-                            <i class="fas fa-info-circle text-indigo-400"></i> Biz Kimiz?
+                            <i class="fas fa-info-circle text-slate-400"></i> Biz Kimiz?
                         </button>
                         <button data-action="open-drawer" data-drawer="b2b" class="w-full text-left px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-800/60 rounded-xl transition flex items-center gap-2">
-                            <i class="fas fa-chart-pie text-emerald-400"></i> B2B & Güven Endeksi
+                            <i class="fas fa-chart-pie text-emerald-400"></i> B2B Güven Endeksi
                         </button>
                         <div class="border-t border-slate-800 my-1"></div>
                         <button data-action="prompt-login" class="w-full text-left px-3 py-2 text-xs font-bold text-slate-400 hover:text-white hover:bg-slate-800/60 rounded-xl transition flex items-center gap-2">
@@ -969,45 +838,28 @@ function renderIndexHtml() {
 
     <div class="flex-grow pb-24 sm:pb-12">
         <main id="section-markets">
-            <!-- CANLI AKIŞ BANNERI (TICKER) -->
-            <section class="py-4 border-b border-slate-900 bg-[#0a0f1d]/70">
+            <!-- G3 HERO ALANI (NET VE ODAKLI) -->
+            <section class="py-8 border-b border-slate-900 bg-gradient-to-b from-slate-900/30 to-transparent">
                 <div class="container mx-auto px-4 max-w-5xl">
-                    <div class="flex flex-col sm:flex-row items-center justify-between gap-3 p-3.5 rounded-2xl bg-[#0f172a]/60 border border-slate-800">
-                        <div class="space-y-0.5 text-center sm:text-left">
-                            <h2 class="text-xs sm:text-sm font-black text-white flex items-center justify-center sm:justify-start gap-1.5">
-                                <span>🎯 Geleceği Kokla, Ordinaryüs Kademesine Tırman!</span>
-                            </h2>
-                            <p class="text-[11px] text-slate-400">Cebinden 1 TL çıkmaz. Liyakat puanınla tahmin yap, itibar kazan.</p>
-                        </div>
-                        <div class="flex items-center gap-2 text-[11px] font-bold bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-slate-300">
-                            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-                            <span id="live-ticker-text">Ahmet_Analist Asgari Ücret pazarına 500 KOR ile EVET bildirdi.</span>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- HERO DÜELLOLAR -->
-            <section class="py-6 border-b border-slate-900">
-                <div class="container mx-auto px-4 max-w-5xl">
-                    <div class="flex items-center justify-between mb-3">
-                        <h3 class="text-xs font-black uppercase tracking-wider text-slate-400 flex items-center gap-2">
-                            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Canlı Kamuoyu Düelloları
-                        </h3>
+                    <div class="text-center mb-6">
+                        <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-500/10 border border-purple-500/20 text-xs font-bold text-purple-300 mb-2">
+                            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span> Canlı Kamuoyu Düelloları
+                        </span>
+                        <h1 class="text-2xl sm:text-3xl font-black text-white tracking-tight">Yarının Nabzını Bugün Tutun.</h1>
                     </div>
                     <div id="hero-duels-container" class="grid grid-cols-1 sm:grid-cols-2 gap-4"></div>
                 </div>
             </section>
 
-            <!-- AÇILIR OKLU (▾) KATEGORİ SEÇİCİ -->
+            <!-- AÇILIR OKLU (▾) 12 KATEGORİ BANDI (BORSA VE FİNANS AYRI) -->
             <section class="container mx-auto px-4 pt-6 pb-2 max-w-5xl">
                 <div class="flex items-center space-x-2 overflow-x-auto pb-2">
                     <button class="cat-btn active bg-indigo-600 text-white px-4 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap" data-action="cat-filter" data-cat="ALL">Tümü</button>
-                    <button class="cat-btn bg-slate-900 hover:bg-slate-800 text-slate-300 px-4 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap flex items-center gap-1" data-action="cat-filter" data-cat="BORSA & FİNANS">
-                        <span>Borsa & Finans</span> <i class="fas fa-chevron-down text-[10px] text-slate-500"></i>
+                    <button class="cat-btn bg-slate-900 hover:bg-slate-800 text-slate-300 px-4 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap flex items-center gap-1" data-action="cat-filter" data-cat="BORSA">
+                        <span>Borsa</span> <i class="fas fa-chevron-down text-[10px] text-slate-500"></i>
                     </button>
-                    <button class="cat-btn bg-slate-900 hover:bg-slate-800 text-slate-300 px-4 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap flex items-center gap-1" data-action="cat-filter" data-cat="SPOR">
-                        <span>Spor</span> <i class="fas fa-chevron-down text-[10px] text-slate-500"></i>
+                    <button class="cat-btn bg-slate-900 hover:bg-slate-800 text-slate-300 px-4 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap flex items-center gap-1" data-action="cat-filter" data-cat="FİNANS">
+                        <span>Finans</span> <i class="fas fa-chevron-down text-[10px] text-slate-500"></i>
                     </button>
                     <button class="cat-btn bg-slate-900 hover:bg-slate-800 text-slate-300 px-4 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap flex items-center gap-1" data-action="cat-filter" data-cat="EKONOMİ">
                         <span>Ekonomi</span> <i class="fas fa-chevron-down text-[10px] text-slate-500"></i>
@@ -1015,20 +867,23 @@ function renderIndexHtml() {
                     <button class="cat-btn bg-slate-900 hover:bg-slate-800 text-slate-300 px-4 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap flex items-center gap-1" data-action="cat-filter" data-cat="TEKNOLOJİ">
                         <span>Teknoloji</span> <i class="fas fa-chevron-down text-[10px] text-slate-500"></i>
                     </button>
-                    <button class="cat-btn bg-slate-900 hover:bg-slate-800 text-slate-300 px-4 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap flex items-center gap-1" data-action="cat-filter" data-cat="MODA & STİL">
-                        <span>Moda & Stil</span> <i class="fas fa-chevron-down text-[10px] text-slate-500"></i>
+                    <button class="cat-btn bg-slate-900 hover:bg-slate-800 text-slate-300 px-4 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap flex items-center gap-1" data-action="cat-filter" data-cat="DİZİ & MEDYA">
+                        <span>Dizi & Film</span> <i class="fas fa-chevron-down text-[10px] text-slate-500"></i>
+                    </button>
+                    <button class="cat-btn bg-slate-900 hover:bg-slate-800 text-slate-300 px-4 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap flex items-center gap-1" data-action="cat-filter" data-cat="OTOMOTİV">
+                        <span>Otomotiv</span> <i class="fas fa-chevron-down text-[10px] text-slate-500"></i>
                     </button>
                 </div>
                 <div id="sub-cat-container" class="hidden flex items-center space-x-1.5 overflow-x-auto pt-2 pb-1 border-t border-slate-900 mt-2"></div>
             </section>
 
-            <!-- 16 ZENGİN PAZAR KARTI -->
+            <!-- 16 ZENGİN PAZAR KARTI (G3 GÖRÜNÜMÜ + HIZLI OY MİKRO KUTUSU) -->
             <section class="container mx-auto px-4 py-4 max-w-5xl">
                 <div id="market-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5"></div>
             </section>
         </main>
 
-        <!-- PAZAR DETAY TERMİNALİ (/market/:slug) -->
+        <!-- PAZAR DETAY SAYFASI (/market/:slug) -->
         <main id="section-market-detail" class="hidden container mx-auto px-4 py-6 max-w-5xl">
             <button data-action="nav-home" class="text-xs text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-1.5 mb-4">
                 <i class="fas fa-arrow-left"></i> Tüm Pazarlara Dön
@@ -1041,17 +896,17 @@ function renderIndexHtml() {
 
             <div class="flex border-b border-slate-800 mb-6 gap-6 text-xs font-bold">
                 <button data-action="dt-switch-tab" data-tab="main" id="dt-tab-main" class="pb-2.5 border-b-2 border-indigo-500 text-white flex items-center gap-1.5">
-                    <i class="fas fa-chart-line text-indigo-400"></i> Grafik & İşlem
+                    <i class="fas fa-chart-line text-indigo-400"></i> Grafik & Teklif Paneli
                 </button>
                 <button data-action="dt-switch-tab" data-tab="community" id="dt-tab-community" class="pb-2.5 text-slate-400 hover:text-white flex items-center gap-1.5">
                     <i class="fas fa-comments text-pink-400"></i> Topluluk Analizleri <span id="dt-comm-count" class="px-1.5 py-0.2 rounded bg-slate-800 text-[10px]">0</span>
                 </button>
                 <button data-action="dt-switch-tab" data-tab="cohorts" id="dt-tab-cohorts" class="pb-2.5 text-slate-400 hover:text-white flex items-center gap-1.5">
-                    <i class="fas fa-layer-group text-amber-400"></i> B2B Kohort Analitiği <span class="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[10px]">Pro</span>
+                    <i class="fas fa-layer-group text-amber-400"></i> B2B Kohort Dağılımı
                 </button>
             </div>
 
-            <!-- PANEL 1: GRAFİK & İŞLEM KONSOLU -->
+            <!-- PANEL 1: GRAFİK & TEKLİF PANİELİ -->
             <div id="dt-view-main" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 <div class="lg:col-span-2 space-y-6">
                     <div class="card-bg border rounded-2xl p-5 shadow-xl">
@@ -1068,11 +923,11 @@ function renderIndexHtml() {
 
                     <div class="card-bg border rounded-2xl p-5 space-y-3">
                         <h3 class="text-sm font-bold text-white flex items-center gap-2">
-                            <i class="fas fa-shield-alt text-indigo-400"></i> Çözümleme Kriterleri & Resmi Kaynak
+                            <i class="fas fa-shield-alt text-indigo-400"></i> Çözümleme Kriteri & Tescilli Kaynak
                         </h3>
                         <p id="dt-desc" class="text-xs text-slate-400 leading-relaxed">Pazar açıklaması...</p>
                         <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 text-xs space-y-1">
-                            <div class="text-slate-400">Tescilli Doğrulama Kaynağı:</div>
+                            <div class="text-slate-400">Resmi Doğrulama Kaynağı:</div>
                             <a id="dt-source-url" href="#" target="_blank" class="font-bold text-indigo-400 hover:underline flex items-center gap-1">
                                 <span id="dt-source-name">Resmi Kurum</span> <i class="fas fa-external-link-alt text-[10px]"></i>
                             </a>
@@ -1080,6 +935,7 @@ function renderIndexHtml() {
                     </div>
                 </div>
 
+                <!-- G4/G8 TEKLİF HESAPLAMA PANELİ -->
                 <div class="card-bg border rounded-2xl p-5 shadow-xl space-y-4 h-fit">
                     <div class="flex justify-between items-center pb-2 border-b border-slate-800">
                         <span class="text-xs font-bold text-slate-400 uppercase">Tahmin Konsolu</span>
@@ -1090,8 +946,13 @@ function renderIndexHtml() {
                         <button data-action="dt-set-choice" data-choice="NO" id="dt-choice-no" class="py-2.5 rounded-xl font-black text-xs uppercase border border-slate-800 bg-slate-950 text-slate-400">HAYIR</button>
                     </div>
                     <div>
-                        <label class="block text-xs font-bold text-slate-400 mb-1">Puan Tutarı</label>
+                        <label class="block text-xs font-bold text-slate-400 mb-1">Puan Miktarı</label>
                         <input type="number" id="dt-input-amount" value="500" min="50" step="50" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-bold text-sm focus:outline-none focus:border-indigo-500">
+                    </div>
+                    <div class="p-3 bg-slate-950/80 rounded-xl border border-slate-800 space-y-1 text-xs">
+                        <div class="flex justify-between text-slate-400"><span>Alınacak Pay:</span><span id="dt-quote-shares" class="font-bold text-white">-- Pay</span></div>
+                        <div class="flex justify-between text-slate-400"><span>Ortalama Fiyat:</span><span id="dt-quote-avg" class="font-bold text-slate-300">-- Puan</span></div>
+                        <div class="flex justify-between pt-1 border-t border-slate-800 font-bold"><span class="text-slate-300">Doğrulanırsa:</span><span id="dt-quote-payout" class="font-black text-emerald-400">-- KOR</span></div>
                     </div>
                     <button data-action="dt-predict-submit" id="dt-btn-predict" class="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs shadow-lg transition">
                         Tahmini Onayla (KOR)
@@ -1099,29 +960,26 @@ function renderIndexHtml() {
                 </div>
             </div>
 
-            <!-- PANEL 2: TOPLULUK ANALİZLERİ & YORUMLAR -->
+            <!-- PANEL 2: TOPLULUK ANALİZLERİ -->
             <div id="dt-view-community" class="hidden space-y-5 max-w-3xl">
                 <div class="card-bg border rounded-2xl p-5 space-y-3">
                     <h3 class="text-xs font-bold text-white flex items-center gap-2">
-                        <i class="fas fa-pen-nib text-indigo-400"></i> Neden Bu Kararı Aldınız? (Gerekçeli Analiz Paylaşın)
+                        <i class="fas fa-pen-nib text-indigo-400"></i> Gerekçeli Analizinizi Paylaşın
                     </h3>
-                    <textarea id="comm-input-content" rows="3" placeholder="Öngörünüzü destekleyen resmi veri veya argümanınızı yazın..." class="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"></textarea>
-                    <div class="flex justify-between items-center pt-1">
-                        <span class="text-[11px] text-slate-500">Tercihiniz ve payınız otomatik olarak analizinizde rozetlenir.</span>
-                        <button data-action="submit-comment" id="btn-submit-comment" class="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-xs font-bold text-white transition">
-                            Analizi Yayınla
-                        </button>
-                    </div>
+                    <textarea id="comm-input-content" rows="3" placeholder="Görüşünüzü destekleyen veri ve argümanı yazın..." class="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"></textarea>
+                    <button data-action="submit-comment" class="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-xl text-xs font-bold text-white transition">
+                        Analizi Yayınla
+                    </button>
                 </div>
                 <div id="dt-comments-list" class="space-y-3"></div>
             </div>
 
-            <!-- PANEL 3: B2B KOHORT DÖKÜMÜ & CSV İNDİRME -->
+            <!-- PANEL 3: B2B KOHORT DAĞILIMI & CSV -->
             <div id="dt-view-cohorts" class="hidden space-y-5">
                 <div class="flex justify-between items-center bg-slate-900/60 p-4 rounded-2xl border border-slate-800">
                     <div>
                         <h4 class="text-xs font-bold text-white uppercase">Kamuoyu Demografik Kırılımı</h4>
-                        <p class="text-[11px] text-slate-400">Katılımcıların yaş ve eğitim düzeyi dağılımı.</p>
+                        <p class="text-[11px] text-slate-400">Katılımcıların sektör ve yaş dağılımı.</p>
                     </div>
                     <button data-action="download-cohort-csv" class="px-3.5 py-2 bg-emerald-600/20 hover:bg-emerald-600 border border-emerald-500/40 text-emerald-300 hover:text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5">
                         <i class="fas fa-file-csv"></i> Ham Veriyi İndir (CSV)
@@ -1129,28 +987,24 @@ function renderIndexHtml() {
                 </div>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div class="card-bg border rounded-2xl p-5 space-y-3">
-                        <h4 class="text-xs font-bold text-slate-300 uppercase flex items-center gap-1.5">
-                            <i class="fas fa-users text-indigo-400"></i> Yaş Kohortuna Göre Dağılım
-                        </h4>
+                        <h4 class="text-xs font-bold text-slate-300 uppercase">Yaş Dağılımı</h4>
                         <div id="cohort-age-list" class="space-y-2 text-xs"></div>
                     </div>
                     <div class="card-bg border rounded-2xl p-5 space-y-3">
-                        <h4 class="text-xs font-bold text-slate-300 uppercase flex items-center gap-1.5">
-                            <i class="fas fa-graduation-cap text-indigo-400"></i> Eğitim Düzeyine Göre Dağılım
-                        </h4>
-                        <div id="cohort-edu-list" class="space-y-2 text-xs"></div>
+                        <h4 class="text-xs font-bold text-slate-300 uppercase">Sektörel Dağılım</h4>
+                        <div id="cohort-ind-list" class="space-y-2 text-xs"></div>
                     </div>
                 </div>
             </div>
         </main>
 
-        <!-- OYLA (ZARLA) -->
-        <main id="section-zarla" class="hidden container mx-auto px-4 py-8 max-w-2xl">
+        <!-- VS ARENASI (10 İKİLİ EŞLEŞME - PUANSIZ SAF KAMUOYU NABZI) -->
+        <main id="section-vs" class="hidden container mx-auto px-4 py-8 max-w-3xl">
             <div class="text-center mb-6">
-                <span class="px-3 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-xs font-bold text-indigo-400">0 Puan, 0 Risk, Saf Kamuoyu Nabzı</span>
-                <h2 class="text-2xl font-black text-white mt-2">Günün Kritik Meseleleri</h2>
+                <span class="px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-xs font-bold text-amber-400">Puansız, Risksiz, Saf Kamuoyu Nabzı</span>
+                <h2 class="text-2xl font-black text-white mt-2">Tüm Zamanların Büyük Kapışması</h2>
             </div>
-            <div id="zarla-list" class="space-y-4"></div>
+            <div id="vs-polls-list" class="grid grid-cols-1 sm:grid-cols-2 gap-4"></div>
         </main>
 
         <!-- PORTFÖYÜM -->
@@ -1174,101 +1028,27 @@ function renderIndexHtml() {
         <div class="card-bg border w-full max-w-lg rounded-3xl p-6 shadow-2xl space-y-4">
             <div class="flex justify-between items-center pb-2 border-b border-slate-800">
                 <h3 class="text-sm font-black text-white flex items-center gap-2">
-                    <i class="fas fa-graduation-cap text-indigo-400"></i> 30 Saniyede OYVER PRO Rehberi
+                    <i class="fas fa-graduation-cap text-indigo-400"></i> 30 Saniyede OYVER PRO
                 </h3>
                 <button data-action="close-explainer" class="text-slate-400 hover:text-white"><i class="fas fa-times"></i></button>
             </div>
             <div class="space-y-3 text-xs leading-relaxed text-slate-300">
                 <div class="p-3 bg-slate-950 rounded-2xl border border-slate-800 space-y-1">
                     <span class="font-black text-amber-400">💰 1. KOR Nedir? Cebimden Para Çıkar mı?</span>
-                    <p class="text-slate-400">Kesinlikle hayır! 14.500 KOR liyakat puanı ücretsiz verilir. Kumar değildir; gerçek bilgi ve öngörü yeteneğini ölçer.</p>
+                    <p class="text-slate-400">Kesinlikle hayır! 14.500 KOR liyakat puanı platform tarafından ücretsiz verilir. Puanların TL karşılığı ve çekimi yoktur.</p>
                 </div>
                 <div class="p-3 bg-slate-950 rounded-2xl border border-slate-800 space-y-1">
-                    <span class="font-black text-pink-400">🗳️ 2. OYLA (Günün Nabzı) Nedir?</span>
-                    <p class="text-slate-400">Puan riski olmadan, gündemin en sıcak konularına tek tıkla oy verip halkın anlık yüzdesini gördüğün kamuoyu alanıdır.</p>
+                    <span class="font-black text-pink-400">⚡ 2. VS Arenası Nedir?</span>
+                    <p class="text-slate-400">Puan riski olmadan, gündemin en popüler ikilemlerine tek tıkla oy verip toplumun anlık eğilimini gördüğünüz alandır.</p>
                 </div>
                 <div class="p-3 bg-slate-950 rounded-2xl border border-slate-800 space-y-1">
                     <span class="font-black text-indigo-400">🎓 3. Ordinaryüs Kademesi Nasıl Kazanılır?</span>
-                    <p class="text-slate-400">Tahminlerin resmi bültenlerle doğrulandıkça Brier kalibrasyon puanın artar. Sırasıyla Doçent, Profesör ve zirvede Ordinaryüs olursun!</p>
+                    <p class="text-slate-400">Tahminleriniz resmi bültenlerle doğrulandıkça Brier kalibrasyon puanınız artar. Sırasıyla Doçent, Profesör ve zirvede Ordinaryüs olursunuz!</p>
                 </div>
             </div>
             <button data-action="close-explainer" class="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold text-white text-xs transition">
                 Anladım, Öngörüye Başla!
             </button>
-        </div>
-    </div>
-
-    <!-- P2P DÜELLO ARENASI & WHATSAPP PAYLAŞIM MODALI -->
-    <div id="p2p-modal" class="fixed inset-0 bg-slate-950/90 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
-        <div class="card-bg border w-full max-w-xl rounded-3xl p-6 shadow-2xl space-y-4">
-            <div class="flex justify-between items-center pb-3 border-b border-slate-800">
-                <div class="flex items-center gap-2">
-                    <span class="text-lg">⚔️</span>
-                    <h3 class="text-base font-black text-white">Birebir Analist Meydan Okuması (5.000 KOR)</h3>
-                </div>
-                <button data-action="close-p2p" class="text-slate-400 hover:text-white"><i class="fas fa-times"></i></button>
-            </div>
-            
-            <div id="p2p-init-view" class="space-y-4 text-xs">
-                <p class="text-slate-300">10 Eleme, 5 Yarı Final ve 1 Altın Final sorusunu çöz, rakibini mağlup et ve 9.600 KOR ödülü kazan!</p>
-                <div class="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1">
-                    <span class="font-bold text-indigo-400">🛡️ 12 Saniye Hile Kalkanı:</span>
-                    <p class="text-slate-400">Her soru için süreniz tam 12 saniyedir.</p>
-                </div>
-                <div>
-                    <label class="block font-bold text-slate-300 mb-1">Meydan Okunacak Kullanıcı Adı</label>
-                    <input type="text" id="p2p-target-user" placeholder="Örn: Ece_Hoca, LeisanB" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white">
-                </div>
-                <button data-action="p2p-start-challenge" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold text-white text-xs shadow-lg transition">
-                    5.000 KOR Teminatla Meydan Oku & Tura Başla
-                </button>
-            </div>
-
-            <div id="p2p-quiz-view" class="hidden space-y-4 text-xs">
-                <div class="flex justify-between items-center bg-slate-950 p-3 rounded-xl border border-slate-800">
-                    <span class="font-bold text-indigo-400" id="quiz-progress">Soru 1 / 16</span>
-                    <div class="flex items-center gap-1 text-amber-400 font-black text-sm">
-                        <i class="far fa-clock"></i> <span id="quiz-timer">12</span>s
-                    </div>
-                </div>
-                <div class="p-4 bg-slate-950 rounded-2xl border border-slate-800 min-h-[90px] flex items-center">
-                    <p class="text-sm font-bold text-white leading-relaxed" id="quiz-question">Soru yükleniyor...</p>
-                </div>
-                <div class="grid grid-cols-2 gap-3" id="quiz-options-box">
-                    <button data-action="p2p-answer" data-choice="A" id="btn-opt-a" class="py-3 px-3 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-slate-200 transition">Seçenek A</button>
-                    <button data-action="p2p-answer" data-choice="B" id="btn-opt-b" class="py-3 px-3 bg-slate-900 border border-slate-800 rounded-xl text-xs font-bold text-slate-200 transition">Seçenek B</button>
-                </div>
-                <div id="quiz-golden-box" class="hidden space-y-2">
-                    <input type="number" step="0.01" id="quiz-golden-input" placeholder="Nokta atışı sayıyı yazın (Örn: 3.14)" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white font-bold text-sm">
-                    <button data-action="p2p-submit-golden" class="w-full py-2.5 bg-amber-600 hover:bg-amber-500 rounded-xl font-bold text-white transition">Altın Tahmini Gönder</button>
-                </div>
-            </div>
-
-            <div id="p2p-done-view" class="hidden space-y-4 text-xs text-center">
-                <div class="w-12 h-12 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center text-xl mx-auto">
-                    <i class="fas fa-check"></i>
-                </div>
-                <h4 class="text-sm font-black text-white">Soruları Tamamladınız!</h4>
-                <p class="text-slate-400">Skorunuz kaydedildi. Şimdi rakibinize WhatsApp üzerinden davet gönderin:</p>
-                <div class="flex gap-2">
-                    <a id="btn-whatsapp-share" href="#" target="_blank" class="flex-1 py-3 bg-emerald-600 hover:bg-emerald-500 rounded-xl font-bold text-white flex items-center justify-center gap-2 transition">
-                        <i class="fab fa-whatsapp text-base"></i> WhatsApp ile Davet Et
-                    </a>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- GELEN MEYDAN OKUMALAR (INBOX) MODALI -->
-    <div id="inbox-modal" class="fixed inset-0 bg-slate-950/90 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
-        <div class="card-bg border w-full max-w-lg rounded-3xl p-6 shadow-2xl space-y-4">
-            <div class="flex justify-between items-center pb-2 border-b border-slate-800">
-                <h3 class="text-sm font-black text-white flex items-center gap-2">
-                    <i class="fas fa-inbox text-amber-400"></i> Bekleyen Meydan Okumalar
-                </h3>
-                <button data-action="close-inbox" class="text-slate-400 hover:text-white"><i class="fas fa-times"></i></button>
-            </div>
-            <div id="inbox-list" class="space-y-3 text-xs"></div>
         </div>
     </div>
 
@@ -1316,7 +1096,7 @@ function renderIndexHtml() {
                 <div>
                     <label class="block font-bold text-slate-300 mb-1">Ulaşım Tercihiniz</label>
                     <select id="p-mob" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white">
-                        <option value="Şahsi Otomobil">Şahsi Otomobil</option><option value="Toplu Taşıma">Toplu Taşıma</option><option value="Yaya / Mikromobilite">Yaya / Mikromobilite</option>
+                        <option value="Şahsi Otomobil">Şahsi Otomobil</option><option value="Toplu Taşıma">Toplu Taşıma</option><option value="Yaya">Yaya / Mikromobilite</option>
                     </select>
                 </div>
                 <div class="p-3 bg-purple-950/20 border border-purple-500/30 rounded-xl space-y-2">
@@ -1339,13 +1119,13 @@ function renderIndexHtml() {
                     </select>
                 </div>
                 <div>
-                    <label class="block font-bold text-slate-300 mb-1">Dışarıda Tüketim</label>
+                    <label class="block font-bold text-slate-300 mb-1">Tüketim Alışkanlığı</label>
                     <select id="p-coffee" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white">
-                        <option value="Zincir Kahveci">Her gün zincir kahvecideyim</option><option value="Evde Demleme">Kendi kahvemi demlerim</option><option value="Çaycı">Çay / Geleneksel</option>
+                        <option value="Zincir Kahveci">Zincir Kahveci</option><option value="Evde Demleme">Evde Demleme</option><option value="Geleneksel">Çay / Geleneksel</option>
                     </select>
                 </div>
                 <div class="p-3 bg-purple-950/20 border border-purple-500/30 rounded-xl space-y-2">
-                    <span class="font-bold text-purple-300">🧠 Karar Sorusu 2 (Aykırı Düşünce):</span>
+                    <span class="font-bold text-purple-300">🧠 Karar Sorusu 2 (Aykırı Zeka):</span>
                     <p class="text-slate-300">Piyasada veya toplumda herkes sizinle aynı fikirdeyse ne hissedersiniz?</p>
                     <div class="space-y-1">
                         <label class="flex items-center gap-2 cursor-pointer"><input type="radio" name="r-contra" value="A" checked> <span>Rahatlar ve doğru yolda olduğumu düşünürüm (Konsensüs)</span></label>
@@ -1357,7 +1137,7 @@ function renderIndexHtml() {
         </div>
     </div>
 
-    <!-- KURUMSAL VE BİLGİ MODALI (%93.2 GÜVEN ENDEKSİ DAHİL) -->
+    <!-- KURUMSAL VE BİLGİ MODALI -->
     <div id="info-modal" class="fixed inset-0 bg-slate-950/85 z-50 backdrop-blur-md hidden flex items-center justify-center p-4">
         <div class="card-bg border w-full max-w-lg rounded-3xl p-6 max-h-[85vh] overflow-y-auto space-y-4">
             <div class="flex justify-between items-center pb-3 border-b border-slate-800">
@@ -1379,8 +1159,8 @@ function renderIndexHtml() {
         </div>
     </div>
 
-    <!-- MASAÜSTÜ FOOTER -->
-    <footer class="hidden sm:block bg-[#05080f] border-t border-slate-900 py-10 mt-auto text-xs text-slate-400">
+    <!-- MASAÜSTÜ & MOBİL FOOTER -->
+    <footer class="bg-[#05080f] border-t border-slate-900 py-10 mt-auto text-xs text-slate-400">
         <div class="container mx-auto px-4 max-w-5xl">
             <div class="grid grid-cols-1 md:grid-cols-4 gap-8 mb-8">
                 <div class="space-y-2 md:col-span-2">
@@ -1388,7 +1168,7 @@ function renderIndexHtml() {
                         OYVER<span class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">PRO</span>
                     </a>
                     <p class="text-slate-400 text-xs leading-relaxed max-w-md">
-                        Türkiye'nin liyakat tabanlı ilk kolektif öngörü ve kamuoyu araştırma terminali.
+                        Türkiye’nin liyakat tabanlı ilk kolektif öngörü ve kamuoyu araştırma terminali.
                     </p>
                 </div>
                 <div>
@@ -1396,13 +1176,13 @@ function renderIndexHtml() {
                     <ul class="space-y-2">
                         <li><button data-action="open-drawer" data-drawer="about" class="hover:text-indigo-400 transition">Biz Kimiz?</button></li>
                         <li><button data-action="open-leaderboard" class="hover:text-indigo-400 transition">Akademik Sıralama</button></li>
-                        <li><button data-action="nav-zarla" class="hover:text-indigo-400 transition">OYLA Nabız</button></li>
+                        <li><button data-action="nav-vs" class="hover:text-indigo-400 transition">VS Arenası</button></li>
                     </ul>
                 </div>
                 <div>
                     <h4 class="text-white font-bold mb-3 uppercase tracking-wider text-[11px]">Kurumsal</h4>
                     <ul class="space-y-2">
-                        <li><button data-action="open-drawer" data-drawer="b2b" class="hover:text-indigo-400 transition text-emerald-400">B2B Veri & Güven Endeksi</button></li>
+                        <li><button data-action="open-drawer" data-drawer="b2b" class="hover:text-indigo-400 transition text-emerald-400">B2B Güven Endeksi</button></li>
                         <li><button data-action="open-drawer" data-drawer="contact" class="hover:text-indigo-400 transition">İletişim & Destek</button></li>
                         <li><button data-action="open-drawer" data-drawer="rules" class="hover:text-indigo-400 transition">Liyakat Kuralları</button></li>
                     </ul>
@@ -1420,13 +1200,13 @@ function renderIndexHtml() {
         <button data-action="nav-home" class="flex flex-col items-center gap-1 text-slate-400 hover:text-indigo-400 transition">
             <i class="fas fa-compass text-base"></i><span class="text-[10px] font-bold">Pazarlar</span>
         </button>
-        <button data-action="nav-zarla" class="flex flex-col items-center gap-1 text-slate-400 hover:text-indigo-400 transition">
-            <i class="fas fa-poll text-base"></i><span class="text-[10px] font-bold">OYLA</span>
+        <button data-action="nav-vs" class="flex flex-col items-center gap-1 text-slate-400 hover:text-amber-400 transition">
+            <i class="fas fa-bolt text-base"></i><span class="text-[10px] font-bold">VS</span>
         </button>
         <button data-action="nav-portfolio" class="flex flex-col items-center gap-1 text-slate-400 hover:text-emerald-400 transition">
             <i class="fas fa-briefcase text-base"></i><span class="text-[10px] font-bold">Portföy</span>
         </button>
-        <button data-action="open-leaderboard" class="flex flex-col items-center gap-1 text-slate-400 hover:text-amber-400 transition">
+        <button data-action="open-leaderboard" class="flex flex-col items-center gap-1 text-slate-400 hover:text-indigo-400 transition">
             <i class="fas fa-graduation-cap text-base"></i><span class="text-[10px] font-bold">Liyakat</span>
         </button>
     </nav>
@@ -1442,11 +1222,18 @@ function renderIndexHtml() {
         var activeDetailChoice = 'YES';
         var chartInstance = null;
 
-        var p2pActiveDuelId = null;
-        var p2pCurrentQIdx = 0;
-        var p2pQuestions = [];
-        var p2pAnswers = {};
-        var p2pTimerInterval = null;
+        var vsPolls = [
+            { id: 1, title: 'Tüm Zamanların En İyisi?', a: 'Lionel Messi', b: 'Cristiano Ronaldo' },
+            { id: 2, title: 'Pop Müziğin Zirvesi?', a: 'Tarkan', b: 'Sezen Aksu' },
+            { id: 3, title: 'Efsane Türk Dizisi?', a: 'Kurtlar Vadisi (İlk 97)', b: 'Ezel' },
+            { id: 4, title: 'Geleneksel Tatlı Tercihi?', a: 'Gaziantep Baklavası', b: 'Hatay Künefesi' },
+            { id: 5, title: 'Sokak Lezzeti Hangisi?', a: 'Lahmacun', b: 'Pide' },
+            { id: 6, title: 'Yaşanacak Şehir?', a: 'İstanbul', b: 'İzmir' },
+            { id: 7, title: 'Mobil İşletim Sistemi?', a: 'iOS (Apple)', b: 'Android' },
+            { id: 8, title: 'Güne Başlama İçeceği?', a: 'Demli Türk Çayı', b: 'Taze Filtre Kahve' },
+            { id: 9, title: 'Tarihin En Büyüğü?', a: 'Diego Maradona', b: 'Pelé' },
+            { id: 10, title: 'Ezeli Rekabet Nabzı?', a: 'Galatasaray', b: 'Fenerbahçe' }
+        ];
 
         function escapeHtml(str) {
             if (!str) return '';
@@ -1493,16 +1280,16 @@ function renderIndexHtml() {
         function switchTab(target) {
             var secMarkets = document.getElementById('section-markets');
             var secMarketDetail = document.getElementById('section-market-detail');
-            var secZarla = document.getElementById('section-zarla');
+            var secVs = document.getElementById('section-vs');
             var secPortfolio = document.getElementById('section-portfolio');
 
             secMarkets.classList.add('hidden');
             secMarketDetail.classList.add('hidden');
-            secZarla.classList.add('hidden');
+            secVs.classList.add('hidden');
             secPortfolio.classList.add('hidden');
 
             if (target === 'markets') secMarkets.classList.remove('hidden');
-            if (target === 'zarla') { secZarla.classList.remove('hidden'); loadZarla(); }
+            if (target === 'vs') { secVs.classList.remove('hidden'); renderVsPolls(); }
             if (target === 'portfolio') { secPortfolio.classList.remove('hidden'); loadPortfolio(); }
         }
 
@@ -1510,6 +1297,16 @@ function renderIndexHtml() {
             history.pushState({}, '', '/');
             switchTab('markets');
         }
+
+        function toggleUserDropdown() {
+            document.getElementById('user-dropdown').classList.toggle('hidden');
+        }
+
+        window.onclick = function(e) {
+            if (!e.target.closest('#user-badge') && !e.target.closest('#user-dropdown')) {
+                document.getElementById('user-dropdown')?.classList.add('hidden');
+            }
+        };
 
         // KART İÇİ HIZLI OY KUTUSU (INLINE POPOVER)
         function toggleQuickVoteBox(marketId, outcome) {
@@ -1590,7 +1387,7 @@ function renderIndexHtml() {
             }
         }
 
-        // 16 PAZAR KARTINI BAS
+        // 16 PAZAR KARTI RENDERI (G3 GÖRÜNÜMÜYLE EŞLEŞEN)
         function renderMarkets() {
             var container = document.getElementById('market-grid');
             if (!container) return;
@@ -1615,7 +1412,7 @@ function renderIndexHtml() {
                         '<div class="text-[10px] text-slate-500 mb-3 flex items-center gap-1"><i class="fas fa-landmark"></i><span>' + escapeHtml(m.source_name) + '</span></div>' +
                         '<div class="space-y-1 mb-4 cursor-pointer" data-action="open-detail" data-slug="' + m.slug + '">' +
                             '<div class="flex justify-between text-[11px] font-semibold">' +
-                                '<span class="text-slate-400">Havuz: ' + m.poolTotal + '</span><span class="text-emerald-400 font-bold">EVET: %' + m.probYes + '</span>' +
+                                '<span class="text-slate-400">Havuz: ' + m.poolTotal + ' Puan</span><span class="text-emerald-400 font-bold">EVET: %' + m.probYes + '</span>' +
                             '</div>' +
                             '<div class="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden flex border border-slate-800">' +
                                 '<div class="bg-emerald-500 h-full transition-all duration-700" style="width:' + m.probYes + '%"></div>' +
@@ -1652,8 +1449,8 @@ function renderIndexHtml() {
                             '</button>' +
                         '</div>' +
 
-                        '<button type="button" data-action="open-detail" data-slug="' + m.slug + '" class="w-full py-1.5 text-center text-[11px] font-bold text-slate-400 hover:text-white transition flex items-center justify-center gap-1">' +
-                            '<span>Terminal & Derin Analiz</span> <i class="fas fa-chevron-right text-[9px]"></i>' +
+                        '<button type="button" data-action="open-detail" data-slug="' + m.slug + '" class="w-full py-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-xs font-bold text-purple-300 hover:text-white transition flex justify-center items-center gap-1.5">' +
+                            '<i class="fas fa-chart-line text-[10px]"></i> Terminal & Tahmin' +
                         '</button>' +
                     '</div>';
 
@@ -1661,7 +1458,7 @@ function renderIndexHtml() {
             });
         }
 
-        // HERO DÜELLOLAR
+        // HERO DÜELLOLAR (G3 GÖRÜNÜMÜ & OY VERİNCE YÜZDEYE DÖNÜŞEN AKIŞ)
         async function loadHeroDuels() {
             var res = await fetch('/api/duels').then(function(r){ return r.json(); });
             heroDuels = res.duels || [];
@@ -1673,32 +1470,44 @@ function renderIndexHtml() {
                 var card = document.createElement('div');
                 card.className = 'card-bg border rounded-2xl p-4 shadow-xl flex flex-col justify-between';
 
+                var actionArea = '';
+                if (d.hasVoted) {
+                    actionArea = 
+                        '<div class="space-y-1.5 mt-3">' +
+                            '<div class="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden flex border border-slate-800">' +
+                                '<div class="bg-indigo-500 h-full transition-all duration-700" style="width:' + d.pctA + '%"></div>' +
+                                '<div class="bg-rose-500 h-full transition-all duration-700" style="width:' + d.pctB + '%"></div>' +
+                            '</div>' +
+                            '<div class="flex justify-between items-center text-[11px] font-black">' +
+                                '<span class="' + (d.userChoice === 'A' ? 'text-indigo-400 font-bold' : 'text-slate-400') + '">' + escapeHtml(d.option_a_name) + ' %' + d.pctA + '</span>' +
+                                '<span class="' + (d.userChoice === 'B' ? 'text-rose-400 font-bold' : 'text-slate-400') + '">' + escapeHtml(d.option_b_name) + ' %' + d.pctB + '</span>' +
+                            '</div>' +
+                        '</div>';
+                } else {
+                    actionArea = 
+                        '<div class="grid grid-cols-2 gap-2 mt-3 pt-2 border-t border-slate-800">' +
+                            '<button type="button" data-action="duel-vote" data-id="' + d.id + '" data-choice="A" class="py-2 px-2 bg-slate-950 hover:bg-indigo-600 border border-slate-800 hover:border-indigo-500 rounded-xl text-[11px] font-bold text-slate-200 hover:text-white transition">' +
+                                'Oy Ver: ' + escapeHtml(d.option_a_name) +
+                            '</button>' +
+                            '<button type="button" data-action="duel-vote" data-id="' + d.id + '" data-choice="B" class="py-2 px-2 bg-slate-950 hover:bg-rose-600 border border-slate-800 hover:border-rose-500 rounded-xl text-[11px] font-bold text-slate-200 hover:text-white transition">' +
+                                'Oy Ver: ' + escapeHtml(d.option_b_name) +
+                            '</button>' +
+                        '</div>';
+                }
+
                 card.innerHTML = 
                     '<div>' +
                         '<div class="flex justify-between items-center mb-2">' +
                             '<span class="px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wider bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">' + escapeHtml(d.category) + '</span>' +
                             '<span class="text-[10px] text-slate-400 font-semibold">' + d.totalVotes + ' Oy</span>' +
                         '</div>' +
-                        '<h3 class="text-xs sm:text-sm font-extrabold text-white leading-snug mb-2">' + escapeHtml(d.title) + '</h3>' +
-                        '<div class="space-y-1.5 mt-2">' +
-                            '<div class="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden flex border border-slate-800">' +
-                                '<div class="bg-indigo-500 h-full transition-all duration-700" style="width:' + d.pctA + '%"></div>' +
-                                '<div class="bg-rose-500 h-full transition-all duration-700" style="width:' + d.pctB + '%"></div>' +
-                            '</div>' +
-                            '<div class="flex justify-between items-center text-[11px] font-black">' +
-                                '<span class="text-indigo-400">' + escapeHtml(d.option_a_name) + ' %' + d.pctA + '</span>' +
-                                '<span class="text-rose-400">' + escapeHtml(d.option_b_name) + ' %' + d.pctB + '</span>' +
-                            '</div>' +
+                        '<h3 class="text-xs sm:text-sm font-extrabold text-white leading-snug mb-3">' + escapeHtml(d.title) + '</h3>' +
+                        '<div class="flex items-center justify-between px-3 py-1.5 bg-slate-950/70 rounded-xl border border-slate-800/80 text-xs font-bold">' +
+                            '<span>' + escapeHtml(d.option_a_name) + '</span>' +
+                            '<span class="text-slate-500 text-[10px] italic">VS</span>' +
+                            '<span>' + escapeHtml(d.option_b_name) + '</span>' +
                         '</div>' +
-                    '</div>' +
-                    '<div class="grid grid-cols-2 gap-2 mt-3 pt-2 border-t border-slate-800">' +
-                        '<button type="button" data-action="duel-vote" data-id="' + d.id + '" data-choice="A" class="py-2 px-2 bg-slate-950 hover:bg-indigo-600 border border-slate-800 hover:border-indigo-500 rounded-xl text-[11px] font-bold text-slate-200 hover:text-white transition">' +
-                            'Oy Ver: ' + escapeHtml(d.option_a_name) +
-                        '</button>' +
-                        '<button type="button" data-action="duel-vote" data-id="' + d.id + '" data-choice="B" class="py-2 px-2 bg-slate-950 hover:bg-rose-600 border border-slate-800 hover:border-rose-500 rounded-xl text-[11px] font-bold text-slate-200 hover:text-white transition">' +
-                            'Oy Ver: ' + escapeHtml(d.option_b_name) +
-                        '</button>' +
-                    '</div>';
+                    '</div>' + actionArea;
 
                 container.appendChild(card);
             });
@@ -1713,14 +1522,14 @@ function renderIndexHtml() {
                 }).then(function(r){ return r.json(); });
 
                 if (res.error) throw new Error(res.error);
-                showToast('🎉 Oyunuz kaydedildi!');
+                showToast('🎉 Oyunuz tescillendi!');
                 loadHeroDuels();
             } catch(e) {
                 showToast(e.message, 'error');
             }
         }
 
-        // DETAY SAYFASI
+        // DETAY SAYFASI (GRAFİK + TEKLİF PANELİ HESAPLAMASI)
         async function openMarketDetail(slug) {
             history.pushState({}, '', '/market/' + slug);
             switchTab('detail');
@@ -1741,6 +1550,7 @@ function renderIndexHtml() {
 
                 switchDetailTab('main');
                 updateDetailChoiceBtns();
+                fetchDetailQuote();
                 renderChart(res.history);
             } catch(e) {
                 showToast(e.message, 'error');
@@ -1811,6 +1621,28 @@ function renderIndexHtml() {
             }
         }
 
+        async function fetchDetailQuote() {
+            if (!activeDetailMarket) return;
+            var amt = parseFloat(document.getElementById('dt-input-amount').value) || 0;
+            if (amt <= 0) return;
+
+            try {
+                var res = await fetch('/api/trade/quote', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ marketId: activeDetailMarket.id, outcome: activeDetailChoice, amountKor: amt, action: 'BUY' })
+                }).then(function(r){ return r.json(); });
+
+                if (res.sharesOut) {
+                    document.getElementById('dt-quote-shares').textContent = res.sharesOut + ' Pay';
+                    document.getElementById('dt-quote-avg').textContent = res.avgPrice + ' Puan (Etki: %' + res.priceImpact + ')';
+                    document.getElementById('dt-quote-payout').textContent = '+' + res.targetPayout;
+                }
+            } catch(e){}
+        }
+
+        document.getElementById('dt-input-amount').oninput = fetchDetailQuote;
+
         async function submitPredict() {
             var amt = document.getElementById('dt-input-amount').value;
             var btn = document.getElementById('dt-btn-predict');
@@ -1836,6 +1668,7 @@ function renderIndexHtml() {
             }
         }
 
+        // YORUMLAR (TOPLULUK ANALİZLERİ)
         async function loadComments() {
             if (!activeDetailMarket) return;
             var res = await fetch('/api/markets/' + activeDetailMarket.slug + '/comments').then(function(r){ return r.json(); });
@@ -1895,9 +1728,9 @@ function renderIndexHtml() {
             if (!activeDetailMarket) return;
             var res = await fetch('/api/markets/' + activeDetailMarket.slug + '/cohorts').then(function(r){ return r.json(); });
             var ageContainer = document.getElementById('cohort-age-list');
-            var eduContainer = document.getElementById('cohort-edu-list');
+            var indContainer = document.getElementById('cohort-ind-list');
             ageContainer.innerHTML = '';
-            eduContainer.innerHTML = '';
+            indContainer.innerHTML = '';
 
             res.ageCohorts.forEach(function(c) {
                 var row = document.createElement('div');
@@ -1905,155 +1738,29 @@ function renderIndexHtml() {
                 row.innerHTML = '<span>' + escapeHtml(c.age_group) + '</span><span class="' + (c.outcome === 'YES' ? 'text-emerald-400' : 'text-rose-400') + '">' + c.outcome + ' (' + c.vote_count + ')</span>';
                 ageContainer.appendChild(row);
             });
-            res.educationCohorts.forEach(function(c) {
+            res.industryCohorts.forEach(function(c) {
                 var row = document.createElement('div');
                 row.className = 'flex justify-between p-2.5 bg-slate-950 rounded-xl border border-slate-800 font-bold text-xs';
-                row.innerHTML = '<span>' + escapeHtml(c.education_level) + '</span><span class="' + (c.outcome === 'YES' ? 'text-emerald-400' : 'text-rose-400') + '">' + c.outcome + ' (' + c.vote_count + ')</span>';
-                eduContainer.appendChild(row);
+                row.innerHTML = '<span>' + escapeHtml(c.industry || 'Belirtilmedi') + '</span><span class="' + (c.outcome === 'YES' ? 'text-emerald-400' : 'text-rose-400') + '">' + c.outcome + ' (' + c.vote_count + ')</span>';
+                indContainer.appendChild(row);
             });
         }
 
-        // P2P ARENA
-        async function openP2PModal() {
-            var res = await fetch('/api/p2p/questions').then(function(r){ return r.json(); });
-            p2pQuestions = res.questions;
-            document.getElementById('p2p-modal').classList.remove('hidden');
-            document.getElementById('p2p-init-view').classList.remove('hidden');
-            document.getElementById('p2p-quiz-view').classList.add('hidden');
-            document.getElementById('p2p-done-view').classList.add('hidden');
-        }
+        // VS ARENASI (10 İKİLİ EŞLEŞME)
+        function renderVsPolls() {
+            var container = document.getElementById('vs-polls-list');
+            container.innerHTML = '';
 
-        function closeP2PModal() {
-            clearInterval(p2pTimerInterval);
-            document.getElementById('p2p-modal').classList.add('hidden');
-        }
-
-        async function startP2PChallenge() {
-            var target = document.getElementById('p2p-target-user').value;
-            if (!target) return showToast('Lütfen rakip kullanıcı adı girin.', 'error');
-
-            try {
-                var res = await fetch('/api/p2p/challenge', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ targetUsername: target })
-                }).then(function(r){ return r.json(); });
-
-                if (res.error) throw new Error(res.error);
-                p2pActiveDuelId = res.duelId;
-                currentBalance = res.newBalance;
-                document.getElementById('user-balance').textContent = currentBalance.toLocaleString('tr-TR') + ' KOR';
-
-                document.getElementById('p2p-init-view').classList.add('hidden');
-                document.getElementById('p2p-quiz-view').classList.remove('hidden');
-                p2pCurrentQIdx = 0;
-                p2pAnswers = {};
-                loadNextP2PQuestion();
-            } catch(e) {
-                showToast(e.message, 'error');
-            }
-        }
-
-        function loadNextP2PQuestion() {
-            clearInterval(p2pTimerInterval);
-            if (p2pCurrentQIdx >= 15) {
-                document.getElementById('quiz-progress').textContent = 'BÜYÜK FİNAL: NOKTA ATIŞI TAHMİN';
-                document.getElementById('quiz-question').textContent = p2pQuestions[15].q;
-                document.getElementById('quiz-options-box').classList.add('hidden');
-                document.getElementById('quiz-golden-box').classList.remove('hidden');
-                document.getElementById('quiz-timer').textContent = '20';
-
-                var left = 20;
-                p2pTimerInterval = setInterval(function() {
-                    left--;
-                    document.getElementById('quiz-timer').textContent = left;
-                    if (left <= 0) {
-                        clearInterval(p2pTimerInterval);
-                        submitGoldenShot();
-                    }
-                }, 1000);
-                return;
-            }
-
-            var q = p2pQuestions[p2pCurrentQIdx];
-            document.getElementById('quiz-progress').textContent = 'Soru ' + (p2pCurrentQIdx + 1) + ' / 16';
-            document.getElementById('quiz-question').textContent = q.q;
-            document.getElementById('btn-opt-a').textContent = q.a;
-            document.getElementById('btn-opt-b').textContent = q.b;
-
-            document.getElementById('quiz-timer').textContent = '12';
-            var timeLeft = 12;
-            p2pTimerInterval = setInterval(function() {
-                timeLeft--;
-                document.getElementById('quiz-timer').textContent = timeLeft;
-                if (timeLeft <= 0) {
-                    clearInterval(p2pTimerInterval);
-                    answerP2P('TIMEOUT');
-                }
-            }, 1000);
-        }
-
-        function answerP2P(choice) {
-            var q = p2pQuestions[p2pCurrentQIdx];
-            p2pAnswers[q.id] = choice;
-            p2pCurrentQIdx++;
-            loadNextP2PQuestion();
-        }
-
-        async function submitGoldenShot() {
-            clearInterval(p2pTimerInterval);
-            var val = document.getElementById('quiz-golden-input').value || 3.0;
-
-            try {
-                var res = await fetch('/api/p2p/submit-turn', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ duelId: p2pActiveDuelId, answers: p2pAnswers, finalGuess: val })
-                }).then(function(r){ return r.json(); });
-
-                if (res.error) throw new Error(res.error);
-
-                document.getElementById('p2p-quiz-view').classList.add('hidden');
-                document.getElementById('p2p-done-view').classList.remove('hidden');
-
-                var shareUrl = window.location.origin + '?p2p=' + p2pActiveDuelId;
-                var waText = encodeURIComponent('OYVER PRO üzerinde sana 5.000 KOR ödüllü bir meydan okuma başlattım! Bilgine güveniyorsan hemen katıl: ' + shareUrl);
-                document.getElementById('btn-whatsapp-share').href = 'https://wa.me/?text=' + waText;
-
-                showToast('🎉 Turlarınız tamamlandı!');
-            } catch(e) {
-                showToast(e.message, 'error');
-            }
-        }
-
-        async function checkPendingInbox() {
-            var res = await fetch('/api/p2p/pending-challenges').then(function(r){ return r.json(); });
-            var badge = document.getElementById('inbox-badge');
-            if (res.pending && res.pending.length > 0) {
-                badge.textContent = res.pending.length;
-                badge.classList.remove('hidden');
-            } else {
-                badge.classList.add('hidden');
-            }
-        }
-
-        async function openInboxModal() {
-            var res = await fetch('/api/p2p/pending-challenges').then(function(r){ return r.json(); });
-            var list = document.getElementById('inbox-list');
-            list.innerHTML = '';
-            document.getElementById('inbox-modal').classList.remove('hidden');
-
-            if (!res.pending || res.pending.length === 0) {
-                list.innerHTML = '<div class="text-center py-4 text-slate-500">Bekleyen meydan okuma bulunmuyor.</div>';
-                return;
-            }
-
-            res.pending.forEach(function(item) {
-                var div = document.createElement('div');
-                div.className = 'p-3 bg-slate-950 border border-slate-800 rounded-2xl flex items-center justify-between';
-                div.innerHTML = '<div><strong class="text-white">' + escapeHtml(item.challenger_name) + '</strong> sana 5.000 KOR meydan okudu!</div>' +
-                    '<button data-action="accept-challenge" data-id="' + item.id + '" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold">Kabul Et</button>';
-                list.appendChild(div);
+            vsPolls.forEach(function(p) {
+                var card = document.createElement('div');
+                card.className = 'card-bg border rounded-2xl p-4 shadow-lg space-y-3';
+                card.innerHTML = 
+                    '<h3 class="text-xs sm:text-sm font-extrabold text-white">' + escapeHtml(p.title) + '</h3>' +
+                    '<div class="grid grid-cols-2 gap-2 text-xs font-bold">' +
+                        '<button data-action="vote-vs-card" data-choice="A" class="py-2.5 bg-slate-950 hover:bg-indigo-600 border border-slate-800 hover:border-indigo-500 rounded-xl text-slate-200 hover:text-white transition">' + escapeHtml(p.a) + '</button>' +
+                        '<button data-action="vote-vs-card" data-choice="B" class="py-2.5 bg-slate-950 hover:bg-rose-600 border border-slate-800 hover:border-rose-500 rounded-xl text-slate-200 hover:text-white transition">' + escapeHtml(p.b) + '</button>' +
+                    '</div>';
+                container.appendChild(card);
             });
         }
 
@@ -2195,32 +1902,7 @@ function renderIndexHtml() {
             loadPortfolio();
         }
 
-        // ZARLA
-        async function loadZarla() {
-            var res = await fetch('/api/zarla').then(function(r){ return r.json(); });
-            var list = document.getElementById('zarla-list');
-            list.innerHTML = '';
-            res.polls.forEach(function(p) {
-                var card = document.createElement('div');
-                card.className = 'card-bg border rounded-2xl p-4 shadow-lg space-y-3';
-                card.innerHTML = 
-                    '<div class="flex justify-between items-center text-xs"><span class="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-indigo-500/20 text-indigo-300">' + escapeHtml(p.category) + '</span><span class="text-slate-500">' + p.totalVotes + ' Oy</span></div>' +
-                    '<h3 class="text-xs sm:text-sm font-bold text-white">' + escapeHtml(p.question) + '</h3>' +
-                    '<div class="grid grid-cols-2 gap-2 text-xs font-bold">' +
-                        '<button data-action="vote-zarla" data-id="' + p.id + '" data-choice="A" class="py-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-slate-200 transition">' + escapeHtml(p.option_a) + ' (%' + p.pctA + ')</button>' +
-                        '<button data-action="vote-zarla" data-id="' + p.id + '" data-choice="B" class="py-2 bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-slate-200 transition">' + escapeHtml(p.option_b) + ' (%' + p.pctB + ')</button>' +
-                    '</div>';
-                list.appendChild(card);
-            });
-        }
-
-        async function voteZarla(pollId, choice) {
-            await fetch('/api/zarla/vote', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pollId: pollId, choice: choice }) });
-            showToast('🗳️ Oyunuz kaydedildi!');
-            loadZarla();
-        }
-
-        // KURUMSAL ÇEKMECELER
+        // KURUMSAL ÇEKMECELER (TIRNAK ÇAKIŞMASI OLMAYAN TEMİZ METİNLER)
         function openDrawer(type) {
             var modal = document.getElementById('info-modal');
             var title = document.getElementById('info-modal-title');
@@ -2234,19 +1916,15 @@ function renderIndexHtml() {
                     '<p>Katılımcılar sanal KOR puanlarıyla öngörülerini bildirir. AMM motoru toplumun gerçek beklenti eğrisini anlık hesaplar.</p>' +
                     '<div class="p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs"><strong>Önemli Kural:</strong> Platformda bahis veya kumar unsuru bulunmaz; puanların nakit karşılığı ve para çekimi yoktur. En büyük ödül, isabetli kararlarla <strong>Ordinaryüs</strong> kademesine yükselmektir.</div>';
             } else if (type === 'b2b') {
-                title.textContent = 'B2B Veri Terminali & %93.2 Güven Endeksi';
+                title.textContent = 'B2B Güven Endeksi & Doğrulama Metodolojisi';
                 content.innerHTML = 
                     '<div class="p-4 bg-emerald-950/20 border border-emerald-500/40 rounded-2xl space-y-2 mb-3">' +
                         '<div class="flex justify-between items-center">' +
-                            '<span class="font-black text-emerald-400 text-sm">OYVER Güven Endeksi</span>' +
-                            '<span class="text-base font-black text-emerald-300">%93.2 İsabet</span>' +
+                            '<span class="font-black text-emerald-400 text-sm">OYVER Doğrulama Güvencesi</span>' +
+                            '<span class="text-base font-black text-emerald-300">Tescilli Konsensüs</span>' +
                         '</div>' +
-                        '<div class="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden flex border border-slate-800">' +
-                            '<div class="bg-gradient-to-r from-emerald-500 to-teal-400 h-full" style="width: 93.2%"></div>' +
-                        '</div>' +
-                        '<p class="text-[11px] text-slate-300 leading-relaxed">OYVER kullanıcılarının geçmişte %70 olasılık verdiği 100 olayın 71\'i resmi bültenlerle doğrulanmıştır.</p>' +
+                        '<p class="text-[11px] text-slate-300 leading-relaxed">Platform üzerindeki pazarlar yalnızca TCMB, TÜİK, SPK ve Resmi Gazete bültenleriyle tescillenir. Kurumunuz için kohort ve API veri akışı talep edebilirsiniz:</p>' +
                     '</div>' +
-                    '<p>Kurumunuz için özel pazar açma ve kohort verisi entegrasyonu için formu doldurabilirsiniz:</p>' +
                     '<div class="space-y-2 mt-3">' +
                         '<input type="text" id="b2b-company" placeholder="Kurum / Şirket Adı" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white">' +
                         '<input type="email" id="b2b-email" placeholder="Kurumsal E-posta" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-white">' +
@@ -2267,10 +1945,10 @@ function renderIndexHtml() {
                 title.textContent = 'Liyakat ve Derece Kuralları';
                 content.innerHTML = 
                     '<p>1. <strong>Araştırmacı:</strong> Platforma yeni katılan analist adayı.</p>' +
-                    '<p>2. <strong>Uzman Analist:</strong> 10+ sonuçlanmış pazarda isabet sağlayanlar.</p>' +
-                    '<p>3. <strong>Doçent:</strong> FRS puanı 3.000\'i aşan kalibre öngörücüler.</p>' +
+                    '<p>2. <strong>Uzman Analist:</strong> 10 ve üzeri sonuçlanmış pazarda isabet sağlayanlar.</p>' +
+                    '<p>3. <strong>Doçent:</strong> FRS puanı 3000 puanı aşan kalibre öngörücüler.</p>' +
                     '<p>4. <strong>Profesör:</strong> Brier sapması düşük, uzun süreli istikrar yakalayanlar.</p>' +
-                    '<p>5. <strong>Ordinaryüs:</strong> Türkiye genelinde ilk 10\'a giren en isabetli beyinler.</p>';
+                    '<p>5. <strong>Ordinaryüs:</strong> Türkiye genelinde ilk 10 sıradaki en isabetli beyinler.</p>';
             }
         }
 
@@ -2285,8 +1963,8 @@ function renderIndexHtml() {
             if (act === 'nav-home') {
                 e.preventDefault();
                 navigateToHome();
-            } else if (act === 'nav-zarla') {
-                switchTab('zarla');
+            } else if (act === 'nav-vs') {
+                switchTab('vs');
             } else if (act === 'nav-portfolio') {
                 switchTab('portfolio');
             } else if (act === 'toggle-theme') {
@@ -2297,33 +1975,6 @@ function renderIndexHtml() {
                 document.getElementById('explainer-modal').classList.remove('hidden');
             } else if (act === 'close-explainer') {
                 document.getElementById('explainer-modal').classList.add('hidden');
-            } else if (act === 'open-p2p') {
-                openP2PModal();
-            } else if (act === 'close-p2p') {
-                closeP2PModal();
-            } else if (act === 'p2p-start-challenge') {
-                startP2PChallenge();
-            } else if (act === 'p2p-answer') {
-                answerP2P(btn.getAttribute('data-choice'));
-            } else if (act === 'p2p-submit-golden') {
-                submitGoldenShot();
-            } else if (act === 'copy-p2p-link') {
-                var url = window.location.origin + '?p2p=' + p2pActiveDuelId;
-                navigator.clipboard.writeText(url);
-                showToast('📋 Link panoya kopyalandı!');
-            } else if (act === 'open-inbox') {
-                openInboxModal();
-            } else if (act === 'close-inbox') {
-                document.getElementById('inbox-modal').classList.add('hidden');
-            } else if (act === 'accept-challenge') {
-                p2pActiveDuelId = btn.getAttribute('data-id');
-                document.getElementById('inbox-modal').classList.add('hidden');
-                openP2PModal();
-                document.getElementById('p2p-init-view').classList.add('hidden');
-                document.getElementById('p2p-quiz-view').classList.remove('hidden');
-                p2pCurrentQIdx = 0;
-                p2pAnswers = {};
-                loadNextP2PQuestion();
             } else if (act === 'open-profile-step') {
                 openProfileStepModal();
             } else if (act === 'close-profile-step') {
@@ -2364,33 +2015,38 @@ function renderIndexHtml() {
                 var subBox = document.getElementById('sub-cat-container');
                 var pillsHtml = '';
 
-                if (activeCategory === 'SPOR') {
-                    pillsHtml = '<span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Dallar:</span>' +
-                        '<button data-action="subcat-filter" data-sub="ALL" class="sub-btn active px-2.5 py-1 rounded-lg bg-slate-800 text-white text-[11px] font-bold">Tümü</button>' +
-                        '<button data-action="subcat-filter" data-sub="Futbol" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">⚽ Futbol</button>' +
-                        '<button data-action="subcat-filter" data-sub="Basketbol" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">🏀 Basketbol</button>' +
-                        '<button data-action="subcat-filter" data-sub="Formula 1" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">🏎 Formula 1</button>';
-                } else if (activeCategory === 'BORSA & FİNANS') {
-                    pillsHtml = '<span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Piyasalar:</span>' +
+                if (activeCategory === 'BORSA') {
+                    pillsHtml = '<span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Borsa:</span>' +
                         '<button data-action="subcat-filter" data-sub="ALL" class="sub-btn active px-2.5 py-1 rounded-lg bg-slate-800 text-white text-[11px] font-bold">Tümü</button>' +
                         '<button data-action="subcat-filter" data-sub="BIST 100" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">BIST 100</button>' +
                         '<button data-action="subcat-filter" data-sub="Halka Arz" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Halka Arz</button>' +
-                        '<button data-action="subcat-filter" data-sub="Altın & Emtia" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Altın & Emtia</button>';
+                        '<button data-action="subcat-filter" data-sub="Sektör Endeksi" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">XBANK Banka</button>';
+                } else if (activeCategory === 'FİNANS') {
+                    pillsHtml = '<span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Finans:</span>' +
+                        '<button data-action="subcat-filter" data-sub="ALL" class="sub-btn active px-2.5 py-1 rounded-lg bg-slate-800 text-white text-[11px] font-bold">Tümü</button>' +
+                        '<button data-action="subcat-filter" data-sub="Kıymetli Maden" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Altın & Gümüş</button>' +
+                        '<button data-action="subcat-filter" data-sub="Para Politikası" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">TCMB Faiz</button>';
                 } else if (activeCategory === 'EKONOMİ') {
-                    pillsHtml = '<span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Odak:</span>' +
+                    pillsHtml = '<span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Ekonomi:</span>' +
                         '<button data-action="subcat-filter" data-sub="ALL" class="sub-btn active px-2.5 py-1 rounded-lg bg-slate-800 text-white text-[11px] font-bold">Tümü</button>' +
-                        '<button data-action="subcat-filter" data-sub="Asgari Ücret" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Asgari Ücret</button>' +
-                        '<button data-action="subcat-filter" data-sub="Faiz" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">TCMB Faiz</button>';
+                        '<button data-action="subcat-filter" data-sub="Gelir & Ücret" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Asgari Ücret</button>' +
+                        '<button data-action="subcat-filter" data-sub="Fiyat İstikrarı" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Enflasyon</button>' +
+                        '<button data-action="subcat-filter" data-sub="Milli Gelir" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Büyüme (GSYH)</button>';
                 } else if (activeCategory === 'TEKNOLOJİ') {
-                    pillsHtml = '<span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Alanlar:</span>' +
+                    pillsHtml = '<span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Teknoloji:</span>' +
                         '<button data-action="subcat-filter" data-sub="ALL" class="sub-btn active px-2.5 py-1 rounded-lg bg-slate-800 text-white text-[11px] font-bold">Tümü</button>' +
-                        '<button data-action="subcat-filter" data-sub="Yapay Zeka" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Yapay Zeka</button>' +
-                        '<button data-action="subcat-filter" data-sub="Uzay & Uydu" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Uzay & Havacılık</button>';
-                } else if (activeCategory === 'MODA & STİL') {
-                    pillsHtml = '<span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Stil:</span>' +
+                        '<button data-action="subcat-filter" data-sub="Regülasyon" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Yapay Zeka Yasası</button>' +
+                        '<button data-action="subcat-filter" data-sub="Uzay & Uydu" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">TÜRKSAT 6A</button>' +
+                        '<button data-action="subcat-filter" data-sub="Girişimcilik" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Unicorn Girişim</button>';
+                } else if (activeCategory === 'DİZİ & MEDYA') {
+                    pillsHtml = '<span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Medya:</span>' +
                         '<button data-action="subcat-filter" data-sub="ALL" class="sub-btn active px-2.5 py-1 rounded-lg bg-slate-800 text-white text-[11px] font-bold">Tümü</button>' +
-                        '<button data-action="subcat-filter" data-sub="Trendler" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Moda Haftası</button>' +
-                        '<button data-action="subcat-filter" data-sub="Lüks Tüketim" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Tekstil & Tasarım</button>';
+                        '<button data-action="subcat-filter" data-sub="Televizyon" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Dizi Reyting</button>' +
+                        '<button data-action="subcat-filter" data-sub="Sinema" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">Gişe Rekoru</button>';
+                } else if (activeCategory === 'OTOMOTİV') {
+                    pillsHtml = '<span class="text-[10px] text-slate-500 font-bold uppercase mr-1">Mobilite:</span>' +
+                        '<button data-action="subcat-filter" data-sub="ALL" class="sub-btn active px-2.5 py-1 rounded-lg bg-slate-800 text-white text-[11px] font-bold">Tümü</button>' +
+                        '<button data-action="subcat-filter" data-sub="Elektrikli Araç" class="sub-btn px-2.5 py-1 rounded-lg bg-slate-900 text-slate-400 hover:text-white text-[11px] font-bold">TOGG Sedan</button>';
                 }
 
                 if (pillsHtml) {
@@ -2422,6 +2078,7 @@ function renderIndexHtml() {
             } else if (act === 'dt-set-choice') {
                 activeDetailChoice = btn.getAttribute('data-choice');
                 updateDetailChoiceBtns();
+                fetchDetailQuote();
             } else if (act === 'dt-predict-submit') {
                 submitPredict();
             } else if (act === 'submit-comment') {
@@ -2430,30 +2087,36 @@ function renderIndexHtml() {
                 window.location.href = '/api/markets/' + activeDetailMarket.slug + '/export';
             } else if (act === 'sell-position') {
                 sellPosition(btn.getAttribute('data-id'), btn.getAttribute('data-outcome'), btn.getAttribute('data-shares'));
-            } else if (act === 'vote-zarla') {
-                voteZarla(btn.getAttribute('data-id'), btn.getAttribute('data-choice'));
-            } else if (act === 'load-portfolio') {
-                loadPortfolio();
+            } else if (act === 'vote-vs-card') {
+                showToast('🗳️ Oyunuz VS Arenasına kaydedildi!');
             } else if (act === 'submit-b2b-form') {
-                submitContactForm('B2B_SALES');
+                var comp = document.getElementById('b2b-company').value;
+                var em = document.getElementById('b2b-email').value;
+                var msg = document.getElementById('b2b-msg').value;
+                if (!comp || !em) return showToast('Lütfen alanları doldurun', 'error');
+                fetch('/api/contact', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type: 'B2B', name: comp, email: em, message: msg })
+                }).then(function(){
+                    showToast('Talebiniz kaydedildi.');
+                    document.getElementById('info-modal').classList.add('hidden');
+                });
             } else if (act === 'submit-contact-form') {
-                submitContactForm('GENERAL');
+                var n = document.getElementById('cnt-name').value;
+                var eMail = document.getElementById('cnt-email').value;
+                var m = document.getElementById('cnt-msg').value;
+                if (!n || !eMail) return showToast('Lütfen alanları doldurun', 'error');
+                fetch('/api/contact', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type: 'GENERAL', name: n, email: eMail, message: m })
+                }).then(function(){
+                    showToast('Mesajınız iletildi.');
+                    document.getElementById('info-modal').classList.add('hidden');
+                });
             }
         });
-
-        // CANLI TICKER
-        var TICKER_MESSAGES = [
-            "Ahmet_Analist Asgari Ücret pazarına 500 KOR ile EVET bildirdi.",
-            "Ece_Hoca Formula 1 Ferrari Şampiyonluğuna 1.000 KOR yatırdı.",
-            "Liyakat Ligi Zirvesi: Ahmet_Analist Ordinaryüs kademesinde lider!",
-            "TCMB Faiz kararında EVET olasılığı %45 seviyesinde dengelendi."
-        ];
-        var tickerIdx = 0;
-        setInterval(function() {
-            tickerIdx = (tickerIdx + 1) % TICKER_MESSAGES.length;
-            var el = document.getElementById('live-ticker-text');
-            if (el) el.textContent = TICKER_MESSAGES[tickerIdx];
-        }, 5000);
 
         // WEBSOCKET
         function connectWebSocket() {
@@ -2477,14 +2140,13 @@ function renderIndexHtml() {
             ws.onclose = function() { setTimeout(connectWebSocket, 2500); };
         }
 
-        // BAŞLATICI
+        // BAŞLATICI (HER TÜRLÜ HATAYI YAKALAYIP EKRANI AÇAN GÜVENLİ BLOK)
         async function init() {
             try {
                 var me = await fetch('/api/me').then(function(r){ return r.json(); });
                 currentBalance = Math.round(parseFloat(me.balance_kor || 0));
                 document.getElementById('user-balance').textContent = currentBalance.toLocaleString('tr-TR') + ' KOR';
                 document.getElementById('user-streak').textContent = (me.streak || 0) + 'g';
-                document.getElementById('user-tier-badge').textContent = me.tier || 'Doçent';
                 document.getElementById('dd-username').textContent = me.username || 'Misafir';
                 document.getElementById('dd-tier').textContent = 'Kademesi: ' + (me.tier || 'Gözlemci');
                 document.getElementById('dd-archetype').textContent = me.personality_archetype || '-';
@@ -2494,17 +2156,13 @@ function renderIndexHtml() {
                 markets = res.markets || [];
                 renderMarkets();
 
-                if (me.role !== 'GUEST') {
-                    checkPendingInbox();
-                }
-
                 var path = window.location.pathname;
                 if (path.startsWith('/market/')) {
                     var slug = path.split('/')[2];
                     openMarketDetail(slug);
                 }
             } catch(e) {
-                console.error('[OYVER INIT HATASI]', e);
+                console.error('[OYVER INIT ENGINE ERROR]', e);
             }
         }
 
@@ -2528,5 +2186,5 @@ await initDatabase();
 const port = Number(process.env.PORT) || 3000;
 app.listen({ port, host: '0.0.0.0' }, (err, address) => {
     if (err) { console.error(err); process.exit(1); }
-    console.log(`[OYVER PRO] v1.4-RECOVERY-PRODUCTION Aktif: ${address}`);
+    console.log(`[OYVER PRO] v1.4-STABLE-PRODUCTION Aktif: ${address}`);
 });
